@@ -7,9 +7,10 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
 
-var apiBaseAddress = builder.Configuration["services:api:http:0"]
-    ?? builder.Configuration["Api:BaseUrl"]
-    ?? "http://localhost:5154";
+var apiBaseAddress = builder.Configuration["services:api:https:0"]
+    ?? builder.Configuration["services:api:http:0"]
+    ?? throw new InvalidOperationException(
+        "Api endpoint is not configured. Ensure AppHost uses .WithReference(api) for the Web project.");
 
 builder.Services.AddHttpClient<WardrobeApiClient>(client =>
 {
