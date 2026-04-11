@@ -10,4 +10,13 @@ var ollama = builder.AddOllama("ollama")
 
 var model = ollama.AddModel("model", "llama3.2:1b");
 
+var api = builder.AddProject<Projects.Api>("api")
+    .WithReference(ollama)
+    .WithReference(model)
+    .WithEnvironment("Ollama__Model", "llama3.2:1b");
+
+builder.AddProject<Projects.Web>("web")
+    .WithReference(api)
+    .WithExternalHttpEndpoints();
+
 builder.Build().Run();
