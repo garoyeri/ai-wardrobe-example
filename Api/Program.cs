@@ -14,9 +14,10 @@ builder.Services.AddCors(options =>
     options.AddDefaultPolicy(policy =>
         policy.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader()));
 
-var ollamaEndpoint = builder.Configuration["services:ollama:http:0"]
-    ?? builder.Configuration["Ollama:Endpoint"]
-    ?? "http://localhost:11434";
+var ollamaConnectionString = builder.Configuration.GetConnectionString("ollama")
+    ?? throw new InvalidOperationException("Missing Aspire-provided connection string 'ConnectionStrings:ollama'.");
+var ollamaEndpoint = TryGetEndpointFromConnectionString(ollamaConnectionString)
+    ?? throw new InvalidOperationException("Invalid Aspire Ollama connection string. Expected format includes 'Endpoint=...'.");
 var ollamaModel = builder.Configuration["Ollama:Model"] ?? "llama3.2:1b";
 
 builder.Services.AddChatClient(new OllamaApiClient(new Uri(ollamaEndpoint), ollamaModel));
@@ -105,3 +106,17 @@ app.MapPost("/api/chat/recommend", async (
 app.MapDefaultEndpoints();
 
 app.Run();
+
+static string? TryGetEndpointFromConnectionString(string connectionString)
+{
+    const string key = "Endpoint=";
+    var start = connectionString.IndexOf(key, StringComparison.OrdinalIgnoreCase);
+    if (start < 0)
+    {
+        return null;
+    }
+
+    start += key.Length;
+    var end = connectionString.IndexOf(';', start);
+    return (end >= start ? connectionString[start..end] : connectionString[start..]).Trim();
+}
