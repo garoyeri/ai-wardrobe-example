@@ -4,6 +4,8 @@ using Web.Services;
 var builder = WebApplication.CreateBuilder(args);
 var logger = LoggerFactory.Create(logging => logging.AddConsole()).CreateLogger("Startup");
 
+builder.AddServiceDefaults();
+
 // Add services to the container.
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
@@ -58,5 +60,7 @@ app.MapGet("/diagnostics/backend", async (WardrobeApiClient apiClient, Cancellat
             statusCode: StatusCodes.Status503ServiceUnavailable);
     }
 });
+
+    app.MapDefaultEndpoints();
 
 app.Run();

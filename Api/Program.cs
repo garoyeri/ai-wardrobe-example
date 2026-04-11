@@ -5,6 +5,8 @@ using Shared.Contracts;
 
 var builder = WebApplication.CreateBuilder(args);
 
+builder.AddServiceDefaults();
+
 builder.Services.AddOpenApi();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
@@ -99,5 +101,7 @@ app.MapPost("/api/chat/recommend", async (
 
     return Results.Ok(recommendation);
 });
+
+app.MapDefaultEndpoints();
 
 app.Run();

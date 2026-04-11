@@ -1,6 +1,7 @@
 <Solution>
   <Project Path="Api/Api.csproj" />
   <Project Path="AppHost/AppHost.csproj" />
+  <Project Path="ServiceDefaults/ServiceDefaults.csproj" />
   <Project Path="Shared/Shared.csproj" />
   <Project Path="Web/Web.csproj" />
 </Solution>
