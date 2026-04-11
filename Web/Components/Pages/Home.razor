@@ -247,8 +247,11 @@
 
 	protected override async Task OnInitializedAsync()
 	{
-		await LoadClosetAsync();
-		await LoadForecastAsync();
+		await ExecuteAsync(async () =>
+		{
+			await LoadClosetAsync();
+			await LoadForecastAsync();
+		});
 	}
 
 	private async Task AskAgentAsync()
