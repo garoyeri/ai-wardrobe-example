@@ -29,7 +29,13 @@ public static class Extensions
         builder.Services.ConfigureHttpClientDefaults(http =>
         {
             // Turn on resilience by default
-            http.AddStandardResilienceHandler();
+            http.AddStandardResilienceHandler(options =>
+            {
+                // Chat completions can take longer than the default resilience timeout.
+                options.TotalRequestTimeout.Timeout = TimeSpan.FromMinutes(3);
+                options.AttemptTimeout.Timeout = TimeSpan.FromMinutes(2);
+                options.CircuitBreaker.SamplingDuration = TimeSpan.FromMinutes(5);
+            });
 
             // Turn on service discovery by default
             http.AddServiceDiscovery();
