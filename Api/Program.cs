@@ -1,4 +1,5 @@
 using Api.Services;
+using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 using OllamaSharp;
 using Shared.Contracts;
@@ -20,7 +21,8 @@ var ollamaEndpoint = TryGetEndpointFromConnectionString(ollamaConnectionString)
     ?? throw new InvalidOperationException("Invalid Aspire Ollama connection string. Expected format includes 'Endpoint=...'.");
 var ollamaModel = builder.Configuration["Ollama:Model"] ?? "llama3.2:1b";
 
-builder.Services.AddChatClient(new OllamaApiClient(new Uri(ollamaEndpoint), ollamaModel));
+builder.Services.AddChatClient(new OllamaApiClient(new Uri(ollamaEndpoint), ollamaModel))
+    .UseOpenTelemetry(sourceName: "OllamaApiClient", configure: c => { c.EnableSensitiveData = true; });
 builder.Services.AddSingleton<IClosetService, ClosetService>();
 builder.Services.AddSingleton<IWeatherService, WeatherService>();
 builder.Services.AddSingleton<IOutfitRecommendationService, OutfitRecommendationService>();
