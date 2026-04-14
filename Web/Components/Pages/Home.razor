@@ -53,8 +53,7 @@
 				<div class="card-body">
 					@if (agentLoopResponse is not null)
 					{
-						<div class="alert @(agentLoopResponse.UsedFallback ? "alert-warning" : "alert-success") py-2">
-							<div><strong>Agent Loop Summary:</strong> @agentLoopResponse.Summary</div>
+					<div class="alert alert-success py-2">
 							<div><strong>Conversation ID:</strong> @agentLoopResponse.ConversationId</div>
 						</div>
 					}

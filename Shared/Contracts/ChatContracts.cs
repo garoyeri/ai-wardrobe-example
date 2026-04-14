@@ -50,5 +50,4 @@ public sealed record AgentLoopResponse(
     OutfitCandidateProposal Candidate,
     IReadOnlyList<AgentToolCallTrace> ToolCalls,
     IReadOnlyList<AgentHandoffTrace> Handoffs,
-    bool UsedFallback,
     string Summary);
