@@ -5,6 +5,7 @@ namespace Api.Services;
 public interface IClosetService
 {
     IReadOnlyList<ClosetItemDto> List();
+    ClosetSearchResultDto Search(ClosetSearchRequest request);
     ClosetItemDto Add(UpsertClosetItemRequest request);
     ClosetItemDto? Update(Guid id, UpsertClosetItemRequest request);
     bool Delete(Guid id);
@@ -13,9 +14,65 @@ public interface IClosetService
 
 public sealed class ClosetService : IClosetService
 {
+    private const int MaxPageSize = 50;
     private readonly List<ClosetItemDto> _items = Seed();
 
     public IReadOnlyList<ClosetItemDto> List() => _items.OrderBy(x => x.Name).ToArray();
+
+    public ClosetSearchResultDto Search(ClosetSearchRequest request)
+    {
+        var pageNumber = Math.Max(1, request.PageNumber);
+        var pageSize = Math.Clamp(request.PageSize, 1, MaxPageSize);
+
+        IEnumerable<ClosetItemDto> query = _items;
+
+        if (request.Roles is { Count: > 0 })
+        {
+            query = query.Where(item => request.Roles.All(role => item.Roles.Contains(role)));
+        }
+
+        if (request.Colors is { Count: > 0 })
+        {
+            var colors = request.Colors.Select(NormalizeTag).Where(static x => x.Length > 0).ToArray();
+            query = query.Where(item => colors.Any(color => item.Colors.Select(NormalizeTag).Contains(color)));
+        }
+
+        if (request.Patterns is { Count: > 0 })
+        {
+            var patterns = request.Patterns.Select(NormalizeTag).Where(static x => x.Length > 0).ToArray();
+            query = query.Where(item => patterns.Any(pattern => item.Patterns.Select(NormalizeTag).Contains(pattern)));
+        }
+
+        if (request.Waterproof.HasValue)
+        {
+            query = query.Where(item => item.Waterproof == request.Waterproof.Value);
+        }
+
+        if (request.MinWarmth.HasValue)
+        {
+            query = query.Where(item => item.Warmth >= request.MinWarmth.Value);
+        }
+
+        if (request.MaxWarmth.HasValue)
+        {
+            query = query.Where(item => item.Warmth <= request.MaxWarmth.Value);
+        }
+
+        if (request.Formality.HasValue)
+        {
+            query = query.Where(item => item.Formality == request.Formality.Value);
+        }
+
+        var total = query.Count();
+        var items = query
+            .OrderBy(item => item.Name)
+            .Skip((pageNumber - 1) * pageSize)
+            .Take(pageSize)
+            .ToArray();
+
+        var hasMore = (pageNumber * pageSize) < total;
+        return new ClosetSearchResultDto(items, total, pageNumber, pageSize, hasMore);
+    }
 
     public ClosetItemDto Add(UpsertClosetItemRequest request)
     {
@@ -57,6 +114,8 @@ public sealed class ClosetService : IClosetService
             request.Waterproof,
             Math.Clamp(request.Warmth, 1, 5),
             request.Formality);
+
+    private static string NormalizeTag(string value) => value.Trim().ToLowerInvariant();
 
     private static List<ClosetItemDto> Seed() =>
     [

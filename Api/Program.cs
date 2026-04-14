@@ -25,6 +25,7 @@ builder.Services.AddSingleton<IClosetService, ClosetService>();
 builder.Services.AddSingleton<IWeatherService, WeatherService>();
 builder.Services.AddSingleton<IOutfitRecommendationService, OutfitRecommendationService>();
 builder.Services.AddSingleton<IAgentExplanationService, AgentExplanationService>();
+builder.Services.AddSingleton<IAgentLoopService, AgentLoopService>();
 
 var app = builder.Build();
 
@@ -43,6 +44,11 @@ app.UseCors();
 
 var closet = app.MapGroup("/api/closet");
 closet.MapGet("/items", (IClosetService service) => Results.Ok(service.List()));
+closet.MapPost("/items/search", (IClosetService service, ClosetSearchRequest request) =>
+{
+    var result = service.Search(request);
+    return Results.Ok(result);
+});
 closet.MapPost("/items", (IClosetService service, UpsertClosetItemRequest request) =>
 {
     if (request.Roles.Count == 0)
@@ -101,6 +107,20 @@ app.MapPost("/api/chat/recommend", async (
     var recommendation = recommendationService.Recommend(request, closetItems, forecast, explanation);
 
     return Results.Ok(recommendation);
+});
+
+app.MapPost("/api/chat/agent-loop", async (
+    AgentLoopRequest request,
+    IAgentLoopService loopService,
+    CancellationToken cancellationToken) =>
+{
+    if (string.IsNullOrWhiteSpace(request.Prompt))
+    {
+        return Results.BadRequest("Prompt is required.");
+    }
+
+    var response = await loopService.RunAsync(request, cancellationToken);
+    return Results.Ok(response);
 });
 
 app.MapDefaultEndpoints();

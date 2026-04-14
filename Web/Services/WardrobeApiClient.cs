@@ -9,6 +9,13 @@ public sealed class WardrobeApiClient(HttpClient httpClient)
         => await httpClient.GetFromJsonAsync<IReadOnlyList<ClosetItemDto>>("/api/closet/items", cancellationToken)
             ?? [];
 
+    public async Task<ClosetSearchResultDto?> SearchClosetAsync(ClosetSearchRequest request, CancellationToken cancellationToken = default)
+    {
+        var response = await httpClient.PostAsJsonAsync("/api/closet/items/search", request, cancellationToken);
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadFromJsonAsync<ClosetSearchResultDto>(cancellationToken);
+    }
+
     public async Task<ClosetItemDto?> AddClosetItemAsync(UpsertClosetItemRequest request, CancellationToken cancellationToken = default)
     {
         var response = await httpClient.PostAsJsonAsync("/api/closet/items", request, cancellationToken);
@@ -56,5 +63,12 @@ public sealed class WardrobeApiClient(HttpClient httpClient)
         var response = await httpClient.PostAsJsonAsync("/api/chat/recommend", request, cancellationToken);
         response.EnsureSuccessStatusCode();
         return await response.Content.ReadFromJsonAsync<OutfitRecommendationDto>(cancellationToken);
+    }
+
+    public async Task<AgentLoopResponse?> RecommendOutfitWithAgentLoopAsync(AgentLoopRequest request, CancellationToken cancellationToken = default)
+    {
+        var response = await httpClient.PostAsJsonAsync("/api/chat/agent-loop", request, cancellationToken);
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadFromJsonAsync<AgentLoopResponse>(cancellationToken);
     }
 }

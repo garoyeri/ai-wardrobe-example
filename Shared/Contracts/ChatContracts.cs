@@ -15,3 +15,40 @@ public sealed record OutfitRecommendationDto(
     IReadOnlyList<string> Warnings,
     IReadOnlyList<string> Reasons,
     string AgentExplanation);
+
+public sealed record AgentLoopRequest(
+    string Prompt,
+    bool BoldMode = false,
+    string? ConversationId = null,
+    int MaxToolCalls = 6,
+    int PageSize = 12);
+
+public sealed record OutfitCandidateProposal(
+    Guid? TopId,
+    Guid? BottomId,
+    Guid? ShoesId,
+    Guid? HatId,
+    Guid? JacketId,
+    bool UsesHybridTopBottom,
+    string Rationale);
+
+public sealed record AgentToolCallTrace(
+    string Agent,
+    string Tool,
+    string Arguments,
+    int ResultCount,
+    string Summary);
+
+public sealed record AgentHandoffTrace(
+    string From,
+    string To,
+    string Note);
+
+public sealed record AgentLoopResponse(
+    string ConversationId,
+    OutfitRecommendationDto Recommendation,
+    OutfitCandidateProposal Candidate,
+    IReadOnlyList<AgentToolCallTrace> ToolCalls,
+    IReadOnlyList<AgentHandoffTrace> Handoffs,
+    bool UsedFallback,
+    string Summary);

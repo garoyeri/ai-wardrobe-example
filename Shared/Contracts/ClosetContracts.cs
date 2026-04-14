@@ -45,3 +45,21 @@ public sealed record UpsertClosetItemRequest(
     bool Waterproof,
     int Warmth,
     FormalityLevel Formality);
+
+public sealed record ClosetSearchRequest(
+    IReadOnlyList<OutfitRole>? Roles = null,
+    IReadOnlyList<string>? Colors = null,
+    IReadOnlyList<string>? Patterns = null,
+    bool? Waterproof = null,
+    int? MinWarmth = null,
+    int? MaxWarmth = null,
+    FormalityLevel? Formality = null,
+    int PageNumber = 1,
+    int PageSize = 20);
+
+public sealed record ClosetSearchResultDto(
+    IReadOnlyList<ClosetItemDto> Items,
+    int TotalCount,
+    int PageNumber,
+    int PageSize,
+    bool HasMore);

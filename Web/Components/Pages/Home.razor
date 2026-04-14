@@ -22,6 +22,19 @@
 	<section>
 		<h3>Ask What To Wear</h3>
 		<EditForm Model="chatModel" OnValidSubmit="AskAgentAsync">
+			<div class="form-check form-switch mb-3">
+				<InputCheckbox class="form-check-input" @bind-Value="useAgentLoop" />
+				<label class="form-check-label">Use Microsoft Agent Framework loop (tools + handoffs + memory)</label>
+			</div>
+
+			@if (useAgentLoop)
+			{
+				<div class="alert alert-info py-2">
+					<div><strong>Conversation:</strong> @(agentConversationId ?? "(new thread will be created on next run)")</div>
+					<button type="button" class="btn btn-sm btn-outline-secondary mt-2" @onclick="ResetAgentConversation">Start New Agent Thread</button>
+				</div>
+			}
+
 			<div class="mb-3">
 				<label class="form-label">Prompt</label>
 				<InputTextArea class="form-control" @bind-Value="chatModel.Prompt" rows="3" />
@@ -38,6 +51,14 @@
 			<div class="card mt-4">
 				<div class="card-header">Suggested Outfit</div>
 				<div class="card-body">
+					@if (agentLoopResponse is not null)
+					{
+						<div class="alert @(agentLoopResponse.UsedFallback ? "alert-warning" : "alert-success") py-2">
+							<div><strong>Agent Loop Summary:</strong> @agentLoopResponse.Summary</div>
+							<div><strong>Conversation ID:</strong> @agentLoopResponse.ConversationId</div>
+						</div>
+					}
+
 					<p><strong>Top:</strong> @DisplayItem(recommendation.Selection.Top)</p>
 					<p><strong>Bottom:</strong> @DisplayItem(recommendation.Selection.Bottom)</p>
 					<p><strong>Shoes:</strong> @DisplayItem(recommendation.Selection.Shoes)</p>
@@ -70,6 +91,54 @@
 
 					<h5 class="mt-3">Agent Notes</h5>
 					<pre class="p-3 bg-light border rounded">@recommendation.AgentExplanation</pre>
+
+					@if (agentLoopResponse is not null)
+					{
+						<h5 class="mt-4">Agent Candidate</h5>
+						<ul>
+							<li><strong>Top:</strong> @ResolveCandidateItemName(agentLoopResponse.Candidate.TopId)</li>
+							<li><strong>Bottom:</strong> @ResolveCandidateItemName(agentLoopResponse.Candidate.BottomId)</li>
+							<li><strong>Shoes:</strong> @ResolveCandidateItemName(agentLoopResponse.Candidate.ShoesId)</li>
+							<li><strong>Hat:</strong> @ResolveCandidateItemName(agentLoopResponse.Candidate.HatId)</li>
+							<li><strong>Jacket:</strong> @ResolveCandidateItemName(agentLoopResponse.Candidate.JacketId)</li>
+						</ul>
+						<p class="text-muted mb-0">@agentLoopResponse.Candidate.Rationale</p>
+
+						<h5 class="mt-4">Agent Handoffs</h5>
+						<ol>
+							@foreach (var handoff in agentLoopResponse.Handoffs)
+							{
+								<li><strong>@handoff.From</strong> -> <strong>@handoff.To</strong>: @handoff.Note</li>
+							}
+						</ol>
+
+						<h5 class="mt-4">Tool Calls</h5>
+						<div class="table-responsive">
+							<table class="table table-sm table-bordered align-middle">
+								<thead>
+									<tr>
+										<th>Agent</th>
+										<th>Tool</th>
+										<th>Result Count</th>
+										<th>Summary</th>
+										<th>Arguments</th>
+									</tr>
+								</thead>
+								<tbody>
+									@foreach (var toolCall in agentLoopResponse.ToolCalls)
+									{
+										<tr>
+											<td>@toolCall.Agent</td>
+											<td>@toolCall.Tool</td>
+											<td>@toolCall.ResultCount</td>
+											<td>@toolCall.Summary</td>
+											<td><code>@toolCall.Arguments</code></td>
+										</tr>
+									}
+								</tbody>
+							</table>
+						</div>
+					}
 				</div>
 			</div>
 		}
@@ -232,10 +301,13 @@
 @code {
 	private string activeTab = "chat";
 	private bool isBusy;
+	private bool useAgentLoop = true;
 	private string? errorMessage;
+	private string? agentConversationId;
 	private readonly ChatFormModel chatModel = new();
 	private readonly ClosetItemFormModel itemForm = new();
 	private OutfitRecommendationDto? recommendation;
+	private AgentLoopResponse? agentLoopResponse;
 	private IReadOnlyList<ClosetItemDto> closetItems = [];
 	private Guid? editingId;
 	private DateOnly forecastDate = DateOnly.FromDateTime(DateTime.Today);
@@ -258,8 +330,35 @@
 	{
 		await ExecuteAsync(async () =>
 		{
-			recommendation = await ApiClient.RecommendOutfitAsync(new ChatRequest(chatModel.Prompt, chatModel.BoldMode));
+			if (useAgentLoop)
+			{
+				agentLoopResponse = await ApiClient.RecommendOutfitWithAgentLoopAsync(new AgentLoopRequest(
+					chatModel.Prompt,
+					chatModel.BoldMode,
+					agentConversationId,
+					MaxToolCalls: 6,
+					PageSize: 12));
+
+				if (agentLoopResponse is null)
+				{
+					throw new InvalidOperationException("Agent loop did not return a response.");
+				}
+
+				agentConversationId = agentLoopResponse.ConversationId;
+				recommendation = agentLoopResponse.Recommendation;
+			}
+			else
+			{
+				agentLoopResponse = null;
+				recommendation = await ApiClient.RecommendOutfitAsync(new ChatRequest(chatModel.Prompt, chatModel.BoldMode));
+			}
 		});
+	}
+
+	private void ResetAgentConversation()
+	{
+		agentConversationId = null;
+		agentLoopResponse = null;
 	}
 
 	private async Task SaveItemAsync()
@@ -424,6 +523,17 @@
 			.Select(x => x.ToLowerInvariant())
 			.Distinct()
 			.ToList();
+
+	private string ResolveCandidateItemName(Guid? itemId)
+	{
+		if (!itemId.HasValue)
+		{
+			return "(not selected)";
+		}
+
+		var item = closetItems.FirstOrDefault(x => x.Id == itemId.Value);
+		return item is null ? $"Unknown item ({itemId})" : item.Name;
+	}
 
 	private static string DisplayItem(ClosetItemDto? item) => item?.Name ?? "(not selected)";
 

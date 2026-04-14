@@ -5,6 +5,7 @@ namespace Api.Services;
 public interface IOutfitRecommendationService
 {
     OutfitRecommendationDto Recommend(ChatRequest request, IReadOnlyList<ClosetItemDto> closet, DailyForecastDto forecast, string agentExplanation);
+    OutfitRecommendationDto ValidateCandidate(ChatRequest request, OutfitCandidateProposal candidate, IReadOnlyList<ClosetItemDto> closet, DailyForecastDto forecast, string agentExplanation);
 }
 
 public sealed class OutfitRecommendationService : IOutfitRecommendationService
@@ -94,6 +95,115 @@ public sealed class OutfitRecommendationService : IOutfitRecommendationService
 
         var selection = new OutfitSelectionDto(top, bottom, shoes, hat, jacket, useHybrid);
         return new OutfitRecommendationDto(selection, warnings, reasons, agentExplanation);
+    }
+
+    public OutfitRecommendationDto ValidateCandidate(ChatRequest request, OutfitCandidateProposal candidate, IReadOnlyList<ClosetItemDto> closet, DailyForecastDto forecast, string agentExplanation)
+    {
+        var warnings = new List<string>();
+        var reasons = new List<string>();
+
+        var byId = closet.ToDictionary(item => item.Id, item => item);
+        var top = ResolveItem(candidate.TopId, byId, "top", warnings);
+        var bottom = ResolveItem(candidate.BottomId, byId, "bottom", warnings);
+        var shoes = ResolveItem(candidate.ShoesId, byId, "shoes", warnings);
+        var hat = ResolveItem(candidate.HatId, byId, "hat", warnings);
+        var jacket = ResolveItem(candidate.JacketId, byId, "jacket", warnings);
+
+        if (top is not null && !top.Roles.Contains(OutfitRole.Top))
+        {
+            warnings.Add($"{top.Name} is not a top item.");
+            top = null;
+        }
+
+        if (bottom is not null && !bottom.Roles.Contains(OutfitRole.Bottom))
+        {
+            warnings.Add($"{bottom.Name} is not a bottom item.");
+            bottom = null;
+        }
+
+        if (shoes is not null && !shoes.Roles.Contains(OutfitRole.Shoes))
+        {
+            warnings.Add($"{shoes.Name} is not a shoes item.");
+            shoes = null;
+        }
+
+        if (hat is not null && !hat.Roles.Contains(OutfitRole.Hat))
+        {
+            warnings.Add($"{hat.Name} is not a hat item.");
+            hat = null;
+        }
+
+        if (jacket is not null && !jacket.Roles.Contains(OutfitRole.Jacket))
+        {
+            warnings.Add($"{jacket.Name} is not a jacket item.");
+            jacket = null;
+        }
+
+        var minimumTemp = forecast.Segments.Min(s => s.TemperatureC);
+        var hasRain = forecast.Segments.Any(s => s.Precipitation is PrecipitationKind.Rain or PrecipitationKind.Drizzle or PrecipitationKind.Snow);
+        var hasSun = forecast.Segments.Any(s => s.IsSunny);
+
+        if (top is not null && bottom is not null && top.Id != bottom.Id && !request.BoldMode && PatternsClash(top, bottom))
+        {
+            warnings.Add("Top and bottom patterns may clash. Enable bold mode if this is intentional.");
+        }
+
+        if (top is null || bottom is null || shoes is null)
+        {
+            warnings.Add("Candidate outfit is incomplete for required slots (top, bottom, shoes). Falling back to deterministic selection.");
+            return Recommend(request, closet, forecast, agentExplanation);
+        }
+
+        if (hasRain)
+        {
+            if (jacket is null)
+            {
+                warnings.Add("Rain is expected and no jacket was provided. Falling back to deterministic selection.");
+                return Recommend(request, closet, forecast, agentExplanation);
+            }
+
+            if (!jacket.Waterproof)
+            {
+                warnings.Add("Rain is expected and the selected jacket is not waterproof.");
+            }
+
+            if (!shoes.Waterproof)
+            {
+                warnings.Add("Rain is expected and selected shoes are not waterproof.");
+            }
+        }
+
+        if (hasSun && hat is null)
+        {
+            warnings.Add("Sunny periods are expected; consider adding a hat.");
+        }
+
+        if (minimumTemp <= 8 && jacket is null)
+        {
+            warnings.Add("Low temperatures expected; consider layering with a jacket.");
+        }
+
+        reasons.Add(candidate.Rationale);
+        reasons.Add("Candidate outfit was generated through Agent Framework tool iteration and validated deterministically.");
+
+        var selection = new OutfitSelectionDto(top, bottom, shoes, hat, jacket, candidate.UsesHybridTopBottom);
+        return new OutfitRecommendationDto(selection, warnings, reasons, agentExplanation);
+    }
+
+    private static ClosetItemDto? ResolveItem(Guid? id, IReadOnlyDictionary<Guid, ClosetItemDto> byId, string slot, List<string> warnings)
+    {
+        if (!id.HasValue)
+        {
+            return null;
+        }
+
+        if (byId.TryGetValue(id.Value, out var item))
+        {
+            return item;
+        }
+
+        warnings.Add($"Candidate item for {slot} was not found in closet inventory.");
+        return null;
     }
 
     private static Func<ClosetItemDto, bool> HasRole(params OutfitRole[] roles) =>
