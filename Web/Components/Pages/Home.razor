@@ -19,127 +19,91 @@
 
 @if (activeTab == "chat")
 {
-	<section>
-		<h3>Ask What To Wear</h3>
-		<EditForm Model="chatModel" OnValidSubmit="AskAgentAsync">
-			<div class="form-check form-switch mb-3">
-				<InputCheckbox class="form-check-input" @bind-Value="useAgentLoop" />
-				<label class="form-check-label">Use Microsoft Agent Framework loop (tools + handoffs + memory)</label>
+	<section style="display: flex; flex-direction: column; height: calc(100vh - 300px); gap: 1rem;">
+		<div class="d-flex justify-content-between align-items-center mb-3">
+			<h3>Wardrobe Chat</h3>
+			<div class="btn-group" role="group">
+				<button class="btn btn-outline-secondary" @onclick="StartNewChatAsync" disabled="@isBusy">New Chat</button>
+				<button class="btn btn-outline-info" @onclick="ToggleAgentLoop">
+					@(useAgentLoop ? "🤖 Agent Loop" : "🔧 Simple")
+				</button>
 			</div>
+		</div>
 
-			@if (useAgentLoop)
+		<!-- Chat History -->
+		<div class="flex-grow-1 overflow-auto border rounded p-3 mb-3" style="background-color: #f8f9fa;">
+			@if (chatMessages.Count == 0)
 			{
-				<div class="alert alert-info py-2">
-					<div><strong>Conversation:</strong> @(agentConversationId ?? "(new thread will be created on next run)")</div>
-					<button type="button" class="btn btn-sm btn-outline-secondary mt-2" @onclick="ResetAgentConversation">Start New Agent Thread</button>
+				<div class="text-center text-muted py-5">
+					<p>No messages yet. Start a conversation!</p>
 				</div>
 			}
-
-			<div class="mb-3">
-				<label class="form-label">Prompt</label>
-				<InputTextArea class="form-control" @bind-Value="chatModel.Prompt" rows="3" />
-			</div>
-			<div class="form-check mb-3">
-				<InputCheckbox class="form-check-input" @bind-Value="chatModel.BoldMode" />
-				<label class="form-check-label">Allow bold pattern/color combinations</label>
-			</div>
-			<button class="btn btn-success" disabled="@isBusy">Get Recommendation</button>
-		</EditForm>
-
-		@if (recommendation is not null)
-		{
-			<div class="card mt-4">
-				<div class="card-header">Suggested Outfit</div>
-				<div class="card-body">
-					@if (agentLoopResponse is not null)
-					{
-					<div class="alert alert-success py-2">
-							<div><strong>Conversation ID:</strong> @agentLoopResponse.ConversationId</div>
+			else
+			{
+				@foreach (var msg in chatMessages)
+				{
+					<div class="mb-3">
+						<div class="mb-1">
+							<small class="text-muted">
+								<strong>@(msg.IsAgent ? "🤖 Agent" : "👤 You")</strong>
+								<span class="ms-2">@msg.Timestamp.ToString("HH:mm:ss")</span>
+							</small>
 						</div>
-					}
-
-					<p><strong>Top:</strong> @DisplayItem(recommendation.Selection.Top)</p>
-					<p><strong>Bottom:</strong> @DisplayItem(recommendation.Selection.Bottom)</p>
-					<p><strong>Shoes:</strong> @DisplayItem(recommendation.Selection.Shoes)</p>
-					<p><strong>Hat:</strong> @DisplayItem(recommendation.Selection.Hat)</p>
-					<p><strong>Jacket:</strong> @DisplayItem(recommendation.Selection.Jacket)</p>
-
-					@if (recommendation.Selection.UsesHybridTopBottom)
-					{
-						<p class="text-muted">A hybrid item is fulfilling both top and bottom slots.</p>
-					}
-
-					<h5 class="mt-3">Why This Works</h5>
-					<ul>
-						@foreach (var reason in recommendation.Reasons)
+						@if (msg.IsAgent && msg.OutfitRecommendation is not null)
 						{
-							<li>@reason</li>
-						}
-					</ul>
-
-					@if (recommendation.Warnings.Count > 0)
-					{
-						<h5 class="mt-3 text-warning">Warnings</h5>
-						<ul>
-							@foreach (var warning in recommendation.Warnings)
-							{
-								<li>@warning</li>
-							}
-						</ul>
-					}
-
-					<h5 class="mt-3">Agent Notes</h5>
-					<pre class="p-3 bg-light border rounded">@recommendation.AgentExplanation</pre>
-
-					@if (agentLoopResponse is not null)
-					{
-						<h5 class="mt-4">Agent Candidate</h5>
-						<ul>
-							<li><strong>Top:</strong> @ResolveCandidateItemName(agentLoopResponse.Candidate.TopId)</li>
-							<li><strong>Bottom:</strong> @ResolveCandidateItemName(agentLoopResponse.Candidate.BottomId)</li>
-							<li><strong>Shoes:</strong> @ResolveCandidateItemName(agentLoopResponse.Candidate.ShoesId)</li>
-							<li><strong>Hat:</strong> @ResolveCandidateItemName(agentLoopResponse.Candidate.HatId)</li>
-							<li><strong>Jacket:</strong> @ResolveCandidateItemName(agentLoopResponse.Candidate.JacketId)</li>
-						</ul>
-						<p class="text-muted mb-0">@agentLoopResponse.Candidate.Rationale</p>
-
-						<h5 class="mt-4">Agent Handoffs</h5>
-						<ol>
-							@foreach (var handoff in agentLoopResponse.Handoffs)
-							{
-								<li><strong>@handoff.From</strong> -> <strong>@handoff.To</strong>: @handoff.Note</li>
-							}
-						</ol>
-
-						<h5 class="mt-4">Tool Calls</h5>
-						<div class="table-responsive">
-							<table class="table table-sm table-bordered align-middle">
-								<thead>
-									<tr>
-										<th>Agent</th>
-										<th>Tool</th>
-										<th>Result Count</th>
-										<th>Summary</th>
-										<th>Arguments</th>
-									</tr>
-								</thead>
-								<tbody>
-									@foreach (var toolCall in agentLoopResponse.ToolCalls)
+							<div class="card bg-info-subtle border-info-subtle">
+								<div class="card-body">
+									<p><strong>Top:</strong> @DisplayItem(msg.OutfitRecommendation.Selection.Top)</p>
+									<p><strong>Bottom:</strong> @DisplayItem(msg.OutfitRecommendation.Selection.Bottom)</p>
+									<p><strong>Shoes:</strong> @DisplayItem(msg.OutfitRecommendation.Selection.Shoes)</p>
+									@if (msg.OutfitRecommendation.Selection.Hat is not null)
 									{
-										<tr>
-											<td>@toolCall.Agent</td>
-											<td>@toolCall.Tool</td>
-											<td>@toolCall.ResultCount</td>
-											<td>@toolCall.Summary</td>
-											<td><code>@toolCall.Arguments</code></td>
-										</tr>
+										<p><strong>Hat:</strong> @msg.OutfitRecommendation.Selection.Hat.Name</p>
 									}
-								</tbody>
-							</table>
-						</div>
-					}
-				</div>
-			</div>
+									@if (msg.OutfitRecommendation.Selection.Jacket is not null)
+									{
+										<p><strong>Jacket:</strong> @msg.OutfitRecommendation.Selection.Jacket.Name</p>
+									}
+									<hr />
+									<p class="mb-0"><small><em>@msg.OutfitRecommendation.AgentExplanation</em></small></p>
+								</div>
+							</div>
+						}
+						else
+						{
+							<div class="p-2 rounded @(msg.IsAgent ? "bg-light" : "bg-primary text-white")">
+								@msg.Content
+							</div>
+						}
+					</div>
+				}
+			}
+		</div>
+
+		<!-- Input Area -->
+		<div class="input-group">
+			<input 
+				type="text" 
+				class="form-control" 
+				placeholder="Ask for a wardrobe suggestion or provide feedback..." 
+				@bind="currentMessage"
+				@onkeyup="@(e => e.Key == "Enter" && !isBusy ? SendMessageAsync() : Task.CompletedTask)"
+				disabled="@isBusy" />
+			<button class="btn btn-primary" @onclick="SendMessageAsync" disabled="@isBusy || string.IsNullOrWhiteSpace(currentMessage)">
+				@(isBusy ? "Thinking..." : "Send")
+			</button>
+		</div>
+
+		@if (!string.IsNullOrWhiteSpace(errorMessage))
+		{
+			<div class="alert alert-danger mt-2 mb-0">@errorMessage</div>
+		}
+
+		@if (useAgentLoop && !string.IsNullOrWhiteSpace(agentConversationId))
+		{
+			<small class="text-muted d-block mt-2">
+				Thread ID: @(agentConversationId?.Substring(0, Math.Min(12, agentConversationId.Length)) ?? "")...
+			</small>
 		}
 	</section>
 }
@@ -303,10 +267,9 @@
 	private bool useAgentLoop = true;
 	private string? errorMessage;
 	private string? agentConversationId;
-	private readonly ChatFormModel chatModel = new();
+	private string currentMessage = string.Empty;
+	private readonly List<ChatMessage> chatMessages = [];
 	private readonly ClosetItemFormModel itemForm = new();
-	private OutfitRecommendationDto? recommendation;
-	private AgentLoopResponse? agentLoopResponse;
 	private IReadOnlyList<ClosetItemDto> closetItems = [];
 	private Guid? editingId;
 	private DateOnly forecastDate = DateOnly.FromDateTime(DateTime.Today);
@@ -325,39 +288,81 @@
 		});
 	}
 
-	private async Task AskAgentAsync()
+	private async Task SendMessageAsync()
 	{
+		if (string.IsNullOrWhiteSpace(currentMessage))
+		{
+			return;
+		}
+
+		var userMessage = currentMessage;
+		currentMessage = string.Empty;
+
 		await ExecuteAsync(async () =>
 		{
+			chatMessages.Add(new ChatMessage
+			{
+				IsAgent = false,
+				Content = userMessage,
+				Timestamp = DateTime.Now
+			});
+
 			if (useAgentLoop)
 			{
-				agentLoopResponse = await ApiClient.RecommendOutfitWithAgentLoopAsync(new AgentLoopRequest(
-					chatModel.Prompt,
-					chatModel.BoldMode,
+				var response = await ApiClient.RecommendOutfitWithAgentLoopAsync(new AgentLoopRequest(
+					userMessage,
+					BoldMode: false,
 					agentConversationId,
 					MaxToolCalls: 6,
 					PageSize: 12));
 
-				if (agentLoopResponse is null)
+				if (response is null)
 				{
 					throw new InvalidOperationException("Agent loop did not return a response.");
 				}
 
-				agentConversationId = agentLoopResponse.ConversationId;
-				recommendation = agentLoopResponse.Recommendation;
+				agentConversationId = response.ConversationId;
+
+				chatMessages.Add(new ChatMessage
+				{
+					IsAgent = true,
+					Content = response.Recommendation.AgentExplanation,
+					OutfitRecommendation = response.Recommendation,
+					Timestamp = DateTime.Now
+				});
 			}
 			else
 			{
-				agentLoopResponse = null;
-				recommendation = await ApiClient.RecommendOutfitAsync(new ChatRequest(chatModel.Prompt, chatModel.BoldMode));
+				var recommendation = await ApiClient.RecommendOutfitAsync(new ChatRequest(userMessage, BoldMode: false));
+
+				if (recommendation is not null)
+				{
+					chatMessages.Add(new ChatMessage
+					{
+						IsAgent = true,
+						Content = recommendation.AgentExplanation,
+						OutfitRecommendation = recommendation,
+						Timestamp = DateTime.Now
+					});
+				}
 			}
 		});
 	}
 
-	private void ResetAgentConversation()
+	private async Task StartNewChatAsync()
 	{
-		agentConversationId = null;
-		agentLoopResponse = null;
+		await ExecuteAsync(async () =>
+		{
+			chatMessages.Clear();
+			currentMessage = string.Empty;
+			agentConversationId = null;
+			errorMessage = null;
+		});
+	}
+
+	private void ToggleAgentLoop()
+	{
+		useAgentLoop = !useAgentLoop;
 	}
 
 	private async Task SaveItemAsync()
@@ -536,10 +541,12 @@
 
 	private static string DisplayItem(ClosetItemDto? item) => item?.Name ?? "(not selected)";
 
-	private sealed class ChatFormModel
+	private sealed class ChatMessage
 	{
-		public string Prompt { get; set; } = "I need something practical for a rainy, cool day.";
-		public bool BoldMode { get; set; }
+		public bool IsAgent { get; set; }
+		public string Content { get; set; } = string.Empty;
+		public OutfitRecommendationDto? OutfitRecommendation { get; set; }
+		public DateTime Timestamp { get; set; }
 	}
 
 	private sealed class ClosetItemFormModel
