@@ -21,6 +21,10 @@ public sealed class AgentLoopService : IAgentLoopService
 
     private static readonly AsyncLocal<List<AgentToolCallTrace>?> ActiveTrace = new();
     private static readonly AsyncLocal<string?> ActiveToolAgent = new();
+    // Use a single-element array as a mutable container so that child async contexts
+    // can write back to the parent — direct AsyncLocal value reassignment in a child
+    // is not visible to the parent.
+    private static readonly AsyncLocal<OutfitCandidateProposal?[]?> ActiveCapture = new();
 
     private static readonly HashSet<string> NeutralColors =
     [
@@ -42,7 +46,6 @@ public sealed class AgentLoopService : IAgentLoopService
     private readonly ChatClientAgent _stylistAgent;
     private readonly ChatClientAgent _weatherAgent;
     private readonly ChatClientAgent _ruleAgent;
-    private readonly ChatClientAgent _closetSearchAgent;
 
     public AgentLoopService(
         IChatClient chatClient,
@@ -54,38 +57,52 @@ public sealed class AgentLoopService : IAgentLoopService
         _weatherService = weatherService;
         _logger = logger;
 
-        _stylistAgent = new ChatClientAgent(
-            chatClient,
-            instructions: "You are a practical wardrobe stylist. Focus on intent and constraints in one short paragraph.",
-            name: "stylist-agent");
-
         _weatherAgent = new ChatClientAgent(
             chatClient,
-            instructions: "You are a weather-focused clothing planner. Extract rain/cold/sun constraints concisely.",
-            name: "weather-agent");
+            instructions: """
+                You are a weather-focused clothing planner.
+                Call the evaluateWeatherRisk tool to get today's conditions, then summarize the clothing constraints in 2-3 concise sentences.
+                Cover: temperature range, rain/snow risk, sun exposure, and what clothing properties are needed (waterproof, warmth level, layers).
+                """,
+            name: "weather-agent",
+            tools:
+            [
+                AIFunctionFactory.Create(EvaluateWeatherRiskTool, name: "evaluateWeatherRisk")
+            ]);
 
         _ruleAgent = new ChatClientAgent(
             chatClient,
-            instructions: "You are a fashion rule reviewer. Flag pattern clashes and poor color harmony clearly.",
+            instructions: """
+                You are a fashion rule reviewer.
+                Flag pattern clashes and poor color harmony clearly.
+                """,
             name: "rule-check-agent");
 
-        _closetSearchAgent = new ChatClientAgent(
+        _stylistAgent = new ChatClientAgent(
             chatClient,
-            instructions:
-                "You are a closet search agent with access to tools. You MUST use the tools to analyze the closet. " +
-                "Use searchCloset to find items matching criteria. Use getClosetItemById to inspect specific items. " +
-                "Use checkPatternCompatibility and checkColorCompatibility to validate combinations. " +
-                "Use evaluateWeatherRisk to check conditions. Use validateOutfitCompleteness to check all slots. " +
-                "After gathering data with tools, return strict JSON only: {\"topId\":uuid,\"bottomId\":uuid,\"shoesId\":uuid,\"hatId\":null,\"jacketId\":null,\"usesHybridTopBottom\":false,\"rationale\":\"...\"}",
-            name: "closet-search-agent",
+            instructions: """
+                You are a wardrobe stylist with direct access to the user's closet.
+                Your job is to build a complete outfit (top, bottom, shoes; optionally hat and jacket) that fits the user's prompt, style intent, and the weather summary provided to you.
+
+                WORKFLOW:
+                1. Use the weather summary passed in your prompt — do NOT call a weather tool.
+                2. Call searchCloset with relevant filters (role, color, warmth, waterproof, formality) to discover candidates. Use page sizes of 8–12.
+                3. Pick the best items for each slot. Call checkColorCompatibility and checkPatternCompatibility to validate pairings.
+                4. Call validateOutfitCompleteness with your chosen topId, bottomId, shoesId.
+                   - If the result is INCOMPLETE, identify which slot is missing and repeat searchCloset to fill it, then re-validate.
+                   - Keep iterating until validateOutfitCompleteness confirms the outfit is complete.
+                     5. Once validateOutfitCompleteness returns COMPLETE, call submitOutfit with the chosen IDs and a one-sentence rationale.
+                         Do NOT output JSON. Do NOT write any explanation. ONLY call submitOutfit.
+                """,
+            name: "stylist-agent",
             tools:
             [
                 AIFunctionFactory.Create(SearchClosetTool, name: "searchCloset"),
                 AIFunctionFactory.Create(GetClosetItemByIdTool, name: "getClosetItemById"),
                 AIFunctionFactory.Create(CheckPatternCompatibilityTool, name: "checkPatternCompatibility"),
                 AIFunctionFactory.Create(CheckColorCompatibilityTool, name: "checkColorCompatibility"),
-                AIFunctionFactory.Create(EvaluateWeatherRiskTool, name: "evaluateWeatherRisk"),
-                AIFunctionFactory.Create(ValidateOutfitCompletenessTool, name: "validateOutfitCompleteness")
+                 AIFunctionFactory.Create(ValidateOutfitCompletenessTool, name: "validateOutfitCompleteness"),
+                 AIFunctionFactory.Create(SubmitOutfitTool, name: "submitOutfit")
             ]);
     }
 
@@ -110,56 +127,66 @@ public sealed class AgentLoopService : IAgentLoopService
         _logger.LogInformation("Initializing trace collection with empty list");
         ActiveTrace.Value = toolTraces;
 
-        var forecast = _weatherService.Get();
+        // Weather and rule agents get fresh ephemeral sessions each request to prevent their
+        // conversation history from polluting the stylist's persistent context.
+        var weatherSession = await _weatherAgent.CreateSessionAsync();
+        var ruleSession = await _ruleAgent.CreateSessionAsync();
 
+        ActiveToolAgent.Value = "weather-agent";
         var weatherSummary = await RunWithHandoffAsync(
             handoffs,
             from: "coordinator",
             to: "weather-agent",
-            note: "Extract weather constraints",
-            () => _weatherAgent.RunAsync($"Forecast: {SummarizeForecast(forecast)}", session, options: null, cancellationToken));
+            note: "Call evaluateWeatherRisk tool and summarize clothing constraints",
+            () => _weatherAgent.RunAsync("Summarize today's weather constraints for outfit selection.", weatherSession, options: null, cancellationToken));
+        ActiveToolAgent.Value = null;
 
-        var styleSummary = await RunWithHandoffAsync(
+        ActiveToolAgent.Value = "stylist-agent";
+        ActiveCapture.Value = new OutfitCandidateProposal?[1];
+        var candidateResponse = await RunWithHandoffAsync(
             handoffs,
             from: "weather-agent",
             to: "stylist-agent",
-            note: "Shape style intent",
-            () => _stylistAgent.RunAsync($"User prompt: {request.Prompt}. Bold mode: {request.BoldMode}. Weather constraints: {weatherSummary}", session, options: null, cancellationToken));
-
-        ActiveToolAgent.Value = "closet-search-agent";
-        var candidateResponse = await RunWithHandoffAsync(
-            handoffs,
-            from: "stylist-agent",
-            to: "closet-search-agent",
-            note: "Run iterative closet search with tools",
-            () => _closetSearchAgent.RunAsync(
-                $"Prompt: {request.Prompt}\nBold mode: {request.BoldMode}\nWeather constraints: {weatherSummary}\nStyle intent: {styleSummary}\nUse tools repeatedly as needed. Page size should be <= {Math.Clamp(request.PageSize, 4, 20)}. Return JSON only.",
+            note: "Search closet, validate completeness, iterate until outfit is complete",
+            () => _stylistAgent.RunAsync(
+                $"Prompt: {request.Prompt}\nBold mode: {request.BoldMode}\nWeather constraints: {weatherSummary}\nMax page size: {Math.Clamp(request.PageSize, 4, 20)}",
                 session,
                 options: null,
                 cancellationToken));
-        ActiveToolAgent.Value = null;  // Clear AFTER closet-search completes
+        ActiveToolAgent.Value = null;
 
         ActiveToolAgent.Value = "rule-check-agent";
         var ruleSummary = await RunWithHandoffAsync(
             handoffs,
-            from: "closet-search-agent",
+            from: "stylist-agent",
             to: "rule-check-agent",
             note: "Check pattern/color compatibility",
-            () => _ruleAgent.RunAsync($"Candidate JSON: {candidateResponse}. Forecast: {SummarizeForecast(forecast)}. Give short validation notes.", session, options: null, cancellationToken));
-        ActiveToolAgent.Value = null;  // Clear AFTER rule-check completes
+                () => _ruleAgent.RunAsync($"Candidate JSON: {candidateResponse}. Weather summary: {weatherSummary}. Give short validation notes.", ruleSession, options: null, cancellationToken));
+        ActiveToolAgent.Value = null;
 
         ActiveTrace.Value = null;
         
         _logger.LogInformation("Trace collection complete. Total tool calls captured: {ToolCallCount}", toolTraces.Count);
 
-        var candidate = TryParseCandidate(candidateResponse.ToString());
+        _logger.LogInformation("Raw stylist response: {CandidateResponse}", candidateResponse);
+        var candidate = ActiveCapture.Value?[0];
+
+        // Fallback: the local model may output tool-call JSON as plain text rather than
+        // executing the function. Parse it directly from the response string.
+        if (candidate is null)
+        {
+            candidate = TryParseCandidate(candidateResponse.ToString());
+            if (candidate is not null)
+                _logger.LogInformation("Candidate parsed from raw response text (model did not invoke tool natively).");
+        }
 
         if (candidate is null)
         {
+            _logger.LogError("Stylist did not call submitOutfit. Raw response: {CandidateResponse}", candidateResponse);
             throw new InvalidOperationException("Failed to parse candidate outfit from agent response.");
         }
 
-        var explanation = $"Agent workflow summary:\nWeather: {weatherSummary}\nStylist: {styleSummary}\nRules: {ruleSummary}";
+        var explanation = $"Agent workflow summary:\nWeather: {weatherSummary}\nRules: {ruleSummary}";
 
         // Create a deterministic recommendation from the candidate for display purposes
         var closet = _closetService.List();
@@ -276,16 +303,46 @@ public sealed class AgentLoopService : IAgentLoopService
         return summary;
     }
 
-    [Description("Validate candidate outfit completeness for required slots.")]
+    [Description("Validate candidate outfit completeness. Returns COMPLETE or lists the missing required slots so the agent knows what to search for next.")]
     public string ValidateOutfitCompletenessTool(
         [Description("Candidate top item id")] Guid? topId,
         [Description("Candidate bottom item id")] Guid? bottomId,
-        [Description("Candidate shoes item id")] Guid? shoesId)
+        [Description("Candidate shoes item id")] Guid? shoesId,
+        [Description("Candidate jacket item id (required when rain or cold is expected)")] Guid? jacketId = null)
     {
-        var complete = topId.HasValue && bottomId.HasValue && shoesId.HasValue;
-        var summary = complete ? "Complete required slots." : "Missing at least one required slot.";
-        AddToolTrace("validateOutfitCompleteness", $"top={topId};bottom={bottomId};shoes={shoesId}", 1, summary);
+        var forecast = _weatherService.Get();
+        var hasRain = forecast.Segments.Any(s => s.Precipitation is PrecipitationKind.Rain or PrecipitationKind.Drizzle or PrecipitationKind.Snow);
+        var minTemp = forecast.Segments.Min(s => s.TemperatureC);
+        var needsJacket = hasRain || minTemp <= 10;
+
+        var missing = new List<string>();
+        if (!topId.HasValue) missing.Add("top");
+        if (!bottomId.HasValue) missing.Add("bottom");
+        if (!shoesId.HasValue) missing.Add("shoes");
+        if (needsJacket && !jacketId.HasValue) missing.Add($"jacket (required: rain={hasRain}, minTemp={minTemp}C)");
+
+        var summary = missing.Count == 0
+            ? "COMPLETE: all required slots are filled."
+            : $"INCOMPLETE: missing slots — {string.Join(", ", missing)}. Search for these and re-validate.";
+
+        AddToolTrace("validateOutfitCompleteness", $"top={topId};bottom={bottomId};shoes={shoesId};jacket={jacketId}", 1, summary);
         return summary;
+    }
+
+    [Description("Submit the final completed outfit. Call this ONCE after validateOutfitCompleteness returns COMPLETE.")]
+    public string SubmitOutfitTool(
+        [Description("Top item ID")] Guid topId,
+        [Description("Bottom item ID")] Guid bottomId,
+        [Description("Shoes item ID")] Guid shoesId,
+        [Description("Hat item ID (omit if no hat)")] Guid? hatId = null,
+        [Description("Jacket item ID (omit if no jacket)")] Guid? jacketId = null,
+        [Description("One-sentence rationale for this outfit")] string rationale = "",
+        [Description("True if a single garment covers both top and bottom")] bool usesHybridTopBottom = false)
+    {
+        if (ActiveCapture.Value is not null)
+            ActiveCapture.Value[0] = new OutfitCandidateProposal(topId, bottomId, shoesId, hatId, jacketId, usesHybridTopBottom, rationale);
+        AddToolTrace("submitOutfit", $"top={topId};bottom={bottomId};shoes={shoesId};hat={hatId};jacket={jacketId}", 1, $"Outfit submitted: {rationale}");
+        return "Outfit submitted successfully. Your work is done.";
     }
 
     private void AddToolTrace(string toolName, string arguments, int resultCount, string summary)
@@ -329,8 +386,25 @@ public sealed class AgentLoopService : IAgentLoopService
         }
         catch
         {
-            return null;
         }
+
+        // Handle {"submitOutfit": [{...}]} wrapper that some models emit as plain text
+        // instead of invoking the tool through the function-calling protocol.
+        try
+        {
+            using var doc = JsonDocument.Parse(payload);
+            if (doc.RootElement.TryGetProperty("submitOutfit", out var calls) &&
+                calls.ValueKind == JsonValueKind.Array &&
+                calls.GetArrayLength() > 0)
+            {
+                return JsonSerializer.Deserialize<OutfitCandidateProposal>(calls[0].GetRawText(), JsonOptions);
+            }
+        }
+        catch
+        {
+        }
+
+        return null;
     }
 
     private static string SummarizeForecast(DailyForecastDto forecast) =>
