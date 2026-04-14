@@ -45,7 +45,7 @@ public sealed class AgentLoopService : IAgentLoopService
 
     private readonly ChatClientAgent _stylistAgent;
     private readonly ChatClientAgent _weatherAgent;
-    private readonly ChatClientAgent _ruleAgent;
+    private readonly ChatClientAgent _validationAgent;
 
     public AgentLoopService(
         IChatClient chatClient,
@@ -70,13 +70,28 @@ public sealed class AgentLoopService : IAgentLoopService
                 AIFunctionFactory.Create(EvaluateWeatherRiskTool, name: "evaluateWeatherRisk")
             ]);
 
-        _ruleAgent = new ChatClientAgent(
+        _validationAgent = new ChatClientAgent(
             chatClient,
             instructions: """
-                You are a fashion rule reviewer.
-                Flag pattern clashes and poor color harmony clearly.
+                You are an outfit validation agent.
+                Validate the stylist's submitted outfit against weather and styling constraints using tools.
+
+                REQUIRED CHECKS:
+                1. Call evaluateWeatherRisk to understand temperature and precipitation constraints.
+                2. Call validateOutfitCompleteness with the candidate IDs to verify required slots for current weather.
+                3. Call getClosetItemById for top and bottom and check pattern/color pairing with
+                   checkPatternCompatibility and checkColorCompatibility.
+                4. Return 2-3 concise sentences summarizing pass/fail and any concrete risks.
                 """,
-            name: "rule-check-agent");
+            name: "validation-agent",
+            tools:
+            [
+                AIFunctionFactory.Create(EvaluateWeatherRiskTool, name: "evaluateWeatherRisk"),
+                AIFunctionFactory.Create(ValidateOutfitCompletenessTool, name: "validateOutfitCompleteness"),
+                AIFunctionFactory.Create(GetClosetItemByIdTool, name: "getClosetItemById"),
+                AIFunctionFactory.Create(CheckPatternCompatibilityTool, name: "checkPatternCompatibility"),
+                AIFunctionFactory.Create(CheckColorCompatibilityTool, name: "checkColorCompatibility")
+            ]);
 
         _stylistAgent = new ChatClientAgent(
             chatClient,
@@ -86,13 +101,13 @@ public sealed class AgentLoopService : IAgentLoopService
 
                 WORKFLOW:
                 1. Use the weather summary passed in your prompt — do NOT call a weather tool.
-                2. Call searchCloset with relevant filters (role, color, warmth, waterproof, formality) to discover candidates. Use page sizes of 8–12.
+                2. Call searchCloset with relevant filters (role, color, warmth, waterproof, formality) to discover candidates. Use page sizes of 10.
                 3. Pick the best items for each slot. Call checkColorCompatibility and checkPatternCompatibility to validate pairings.
                 4. Call validateOutfitCompleteness with your chosen topId, bottomId, shoesId.
                    - If the result is INCOMPLETE, identify which slot is missing and repeat searchCloset to fill it, then re-validate.
                    - Keep iterating until validateOutfitCompleteness confirms the outfit is complete.
-                     5. Once validateOutfitCompleteness returns COMPLETE, call submitOutfit with the chosen IDs and a one-sentence rationale.
-                         Do NOT output JSON. Do NOT write any explanation. ONLY call submitOutfit.
+                5. Once validateOutfitCompleteness returns COMPLETE, call submitOutfit with the chosen IDs and a one-sentence rationale.
+                    Do NOT output JSON. Do NOT write any explanation. ONLY call submitOutfit.
                 """,
             name: "stylist-agent",
             tools:
@@ -127,10 +142,10 @@ public sealed class AgentLoopService : IAgentLoopService
         _logger.LogInformation("Initializing trace collection with empty list");
         ActiveTrace.Value = toolTraces;
 
-        // Weather and rule agents get fresh ephemeral sessions each request to prevent their
+        // Weather and validation agents get fresh ephemeral sessions each request to prevent their
         // conversation history from polluting the stylist's persistent context.
         var weatherSession = await _weatherAgent.CreateSessionAsync();
-        var ruleSession = await _ruleAgent.CreateSessionAsync();
+        var validationSession = await _validationAgent.CreateSessionAsync();
 
         ActiveToolAgent.Value = "weather-agent";
         var weatherSummary = await RunWithHandoffAsync(
@@ -155,19 +170,6 @@ public sealed class AgentLoopService : IAgentLoopService
                 cancellationToken));
         ActiveToolAgent.Value = null;
 
-        ActiveToolAgent.Value = "rule-check-agent";
-        var ruleSummary = await RunWithHandoffAsync(
-            handoffs,
-            from: "stylist-agent",
-            to: "rule-check-agent",
-            note: "Check pattern/color compatibility",
-                () => _ruleAgent.RunAsync($"Candidate JSON: {candidateResponse}. Weather summary: {weatherSummary}. Give short validation notes.", ruleSession, options: null, cancellationToken));
-        ActiveToolAgent.Value = null;
-
-        ActiveTrace.Value = null;
-        
-        _logger.LogInformation("Trace collection complete. Total tool calls captured: {ToolCallCount}", toolTraces.Count);
-
         _logger.LogInformation("Raw stylist response: {CandidateResponse}", candidateResponse);
         var candidate = ActiveCapture.Value?[0];
 
@@ -186,7 +188,25 @@ public sealed class AgentLoopService : IAgentLoopService
             throw new InvalidOperationException("Failed to parse candidate outfit from agent response.");
         }
 
-        var explanation = $"Agent workflow summary:\nWeather: {weatherSummary}\nRules: {ruleSummary}";
+        ActiveToolAgent.Value = "validation-agent";
+        var validationSummary = await RunWithHandoffAsync(
+            handoffs,
+            from: "stylist-agent",
+            to: "validation-agent",
+            note: "Validate weather fit and style pairing using tools",
+            () => _validationAgent.RunAsync(
+                $"Candidate IDs: topId={candidate.TopId}, bottomId={candidate.BottomId}, shoesId={candidate.ShoesId}, hatId={candidate.HatId}, jacketId={candidate.JacketId}. " +
+                $"Weather summary from weather-agent: {weatherSummary}. " +
+                "Run the required checks and return concise validation notes.",
+                validationSession,
+                options: null,
+                cancellationToken));
+        ActiveToolAgent.Value = null;
+
+        ActiveTrace.Value = null;
+        _logger.LogInformation("Trace collection complete. Total tool calls captured: {ToolCallCount}", toolTraces.Count);
+
+        var explanation = $"Agent workflow summary:\nWeather: {weatherSummary}\nValidation: {validationSummary}";
 
         // Create a deterministic recommendation from the candidate for display purposes
         var closet = _closetService.List();
@@ -282,7 +302,7 @@ public sealed class AgentLoopService : IAgentLoopService
         var first = Normalize(firstColor);
         var second = Normalize(secondColor);
         var compatible = first == second
-            || (NeutralColors.Contains(first) || NeutralColors.Contains(second))
+            || NeutralColors.Contains(first) || NeutralColors.Contains(second)
             || (first, second) is ("navy", "white") or ("white", "navy") or ("blue", "tan") or ("tan", "blue");
 
         var summary = compatible ? "Color pairing is safe or neutral." : "Color pairing may clash.";
@@ -347,9 +367,9 @@ public sealed class AgentLoopService : IAgentLoopService
 
     private void AddToolTrace(string toolName, string arguments, int resultCount, string summary)
     {
-        _logger.LogInformation("Tool called: {ToolName} | Agent: {Agent} | ResultCount: {ResultCount}", 
+        _logger.LogInformation("Tool called: {ToolName} | Agent: {Agent} | ResultCount: {ResultCount}",
             toolName, ActiveToolAgent.Value ?? "unknown-agent", resultCount);
-            
+
         if (ActiveTrace.Value is null)
         {
             _logger.LogWarning("ActiveTrace is null when trying to add trace for tool {ToolName}", toolName);
@@ -362,7 +382,7 @@ public sealed class AgentLoopService : IAgentLoopService
             Arguments: arguments,
             ResultCount: resultCount,
             Summary: summary));
-            
+
         _logger.LogInformation("Tool trace recorded. Total traces: {TraceCount}", ActiveTrace.Value.Count);
     }
 
