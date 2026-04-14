@@ -116,8 +116,8 @@ public sealed class AgentLoopService : IAgentLoopService
                 AIFunctionFactory.Create(GetClosetItemByIdTool, name: "getClosetItemById"),
                 AIFunctionFactory.Create(CheckPatternCompatibilityTool, name: "checkPatternCompatibility"),
                 AIFunctionFactory.Create(CheckColorCompatibilityTool, name: "checkColorCompatibility"),
-                 AIFunctionFactory.Create(ValidateOutfitCompletenessTool, name: "validateOutfitCompleteness"),
-                 AIFunctionFactory.Create(SubmitOutfitTool, name: "submitOutfit")
+                AIFunctionFactory.Create(ValidateOutfitCompletenessTool, name: "validateOutfitCompleteness"),
+                AIFunctionFactory.Create(SubmitOutfitTool, name: "submitOutfit")
             ]);
     }
 
