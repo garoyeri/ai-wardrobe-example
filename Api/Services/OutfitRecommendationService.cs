@@ -72,9 +72,9 @@ public sealed class OutfitRecommendationService : IOutfitRecommendationService
             }
         }
 
-        if (!request.BoldMode && top is not null && bottom is not null && top.Id != bottom.Id && PatternsClash(top, bottom))
+        if (top is not null && bottom is not null && top.Id != bottom.Id && PatternsClash(top, bottom))
         {
-            warnings.Add("Top and bottom patterns may clash. Enable bold mode if this is intentional.");
+            warnings.Add("Top and bottom patterns may clash.");
         }
 
         if (top is null || bottom is null || shoes is null)

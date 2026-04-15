@@ -45,11 +45,11 @@
 					<div class="mb-3">
 						<div class="mb-1">
 							<small class="text-muted">
-								<strong>@(msg.IsAgent ? "🤖 Agent" : "👤 You")</strong>
+								<strong>@msg.Author</strong>
 								<span class="ms-2">@msg.Timestamp.ToString("HH:mm:ss")</span>
 							</small>
 						</div>
-						<div class="p-2 rounded @(msg.IsAgent ? "bg-light" : "bg-primary text-white")">
+						<div class="p-2 rounded @msg.CssClass">
 							@msg.Content
 						</div>
 					</div>
@@ -277,50 +277,28 @@
 
 		await ExecuteAsync(async () =>
 		{
-			chatMessages.Add(new ChatMessage
-			{
-				IsAgent = false,
-				Content = userMessage,
-				Timestamp = DateTime.Now
-			});
+			AddChatMessage(ChatMessageKind.User, userMessage);
 
 			if (useAgentLoop)
 			{
-				var response = await ApiClient.RecommendOutfitWithAgentLoopAsync(new AgentLoopRequest(
+				await foreach (var streamEvent in ApiClient.StreamAgentLoopAsync(new AgentLoopRequest(
 					userMessage,
-					BoldMode: false,
-					agentConversationId,
+					ConversationId: agentConversationId,
 					MaxToolCalls: 6,
-					PageSize: 12));
-
-				if (response is null)
+					PageSize: 12)))
 				{
-					throw new InvalidOperationException("Agent loop did not return a response.");
+					agentConversationId = streamEvent.ConversationId;
+					HandleStreamEvent(streamEvent);
+					await InvokeAsync(StateHasChanged);
 				}
-
-				agentConversationId = response.ConversationId;
-
-				chatMessages.Add(new ChatMessage
-				{
-					IsAgent = true,
-					Content = response.Recommendation.AgentExplanation,
-					OutfitRecommendation = response.Recommendation,
-					Timestamp = DateTime.Now
-				});
 			}
 			else
 			{
-				var recommendation = await ApiClient.RecommendOutfitAsync(new ChatRequest(userMessage, BoldMode: false));
+				var recommendation = await ApiClient.RecommendOutfitAsync(new ChatRequest(userMessage));
 
 				if (recommendation is not null)
 				{
-					chatMessages.Add(new ChatMessage
-					{
-						IsAgent = true,
-						Content = recommendation.AgentExplanation,
-						OutfitRecommendation = recommendation,
-						Timestamp = DateTime.Now
-					});
+					AddChatMessage(ChatMessageKind.Agent, recommendation.AgentExplanation, "🤖 Agent");
 				}
 			}
 		});
@@ -518,12 +496,77 @@
 
 	private static string DisplayItem(ClosetItemDto? item) => item?.Name ?? "(not selected)";
 
+	private void HandleStreamEvent(AgentLoopStreamEvent streamEvent)
+	{
+		switch (streamEvent.EventType)
+		{
+			case AgentLoopEventType.Status:
+				AddChatMessage(ChatMessageKind.Workflow, streamEvent.Message, "Workflow");
+				break;
+			case AgentLoopEventType.Handoff:
+				AddChatMessage(ChatMessageKind.Workflow, $"Handoff to {streamEvent.Agent}: {streamEvent.Message}", "Workflow");
+				break;
+			case AgentLoopEventType.Tool:
+				AddChatMessage(ChatMessageKind.Workflow, $"{streamEvent.Agent} used {streamEvent.Tool}: {streamEvent.Message}", "Workflow");
+				break;
+			case AgentLoopEventType.AgentMessage:
+				AddChatMessage(ChatMessageKind.Agent, streamEvent.Message, ResolveAgentAuthor(streamEvent.Agent));
+				break;
+			case AgentLoopEventType.Complete:
+				if (streamEvent.Response is null)
+				{
+					throw new InvalidOperationException("Streaming workflow finished without a final response.");
+				}
+				break;
+			case AgentLoopEventType.Error:
+				throw new InvalidOperationException(streamEvent.Message);
+		}
+	}
+
+	private void AddChatMessage(ChatMessageKind kind, string content, string? author = null)
+	{
+		chatMessages.Add(new ChatMessage
+		{
+			Kind = kind,
+			Author = author ?? ResolveAuthor(kind),
+			Content = content,
+			Timestamp = DateTime.Now
+		});
+	}
+
+	private static string ResolveAuthor(ChatMessageKind kind) => kind switch
+	{
+		ChatMessageKind.User => "👤 You",
+		ChatMessageKind.Agent => "🤖 Agent",
+		_ => "Workflow"
+	};
+
+	private static string ResolveAgentAuthor(string? agent) => agent switch
+	{
+		"weather-agent" => "🌤 Weather Agent",
+		"stylist-agent" => "👗 Stylist Agent",
+		_ => "🤖 Agent"
+	};
+
 	private sealed class ChatMessage
 	{
-		public bool IsAgent { get; set; }
+		public ChatMessageKind Kind { get; set; }
+		public string Author { get; set; } = string.Empty;
 		public string Content { get; set; } = string.Empty;
-		public OutfitRecommendationDto? OutfitRecommendation { get; set; }
 		public DateTime Timestamp { get; set; }
+		public string CssClass => Kind switch
+		{
+			ChatMessageKind.User => "bg-primary text-white",
+			ChatMessageKind.Agent => "bg-light",
+			_ => "bg-warning-subtle border"
+		};
+	}
+
+	private enum ChatMessageKind
+	{
+		User,
+		Agent,
+		Workflow
 	}
 
 	private sealed class ClosetItemFormModel

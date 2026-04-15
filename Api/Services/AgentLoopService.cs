@@ -1,7 +1,7 @@
 using System.ComponentModel;
+using System.Threading.Channels;
 using System.Text.Json;
 using Microsoft.Agents.AI;
-using Microsoft.Agents.AI.Workflows;
 using Microsoft.Extensions.AI;
 using Shared.Contracts;
 
@@ -10,6 +10,7 @@ namespace Api.Services;
 public interface IAgentLoopService
 {
     Task<AgentLoopResponse> RunAsync(AgentLoopRequest request, CancellationToken cancellationToken = default);
+    IAsyncEnumerable<AgentLoopStreamEvent> StreamAsync(AgentLoopRequest request, CancellationToken cancellationToken = default);
 }
 
 public sealed class AgentLoopService : IAgentLoopService
@@ -23,23 +24,26 @@ public sealed class AgentLoopService : IAgentLoopService
 
     private readonly IClosetService _closetService;
     private readonly IWeatherService _weatherService;
+    private readonly ILogger<AgentLoopService> _logger;
 
     private readonly ChatClientAgent _weatherAgent;
     private readonly ChatClientAgent _stylistAgent;
-    private readonly Workflow _workflow;
+    private static readonly AsyncLocal<StreamContext?> CurrentStreamContext = new();
 
     public AgentLoopService(
         IChatClient chatClient,
         IClosetService closetService,
-        IWeatherService weatherService)
+        IWeatherService weatherService,
+        ILogger<AgentLoopService> logger)
     {
         _closetService = closetService;
         _weatherService = weatherService;
+        _logger = logger;
 
         _weatherAgent = new ChatClientAgent(
             chatClient,
             instructions: """
-                You are a weather-focused clothing planner.
+                /no_think You are a weather-focused clothing planner.
                 Call the evaluateWeatherRisk tool and return 2-3 concise sentences about clothing constraints.
                 Cover: minimum temperature, precipitation risk, sun exposure, and needed properties (waterproof, warmth, layering).
                 """,
@@ -52,7 +56,7 @@ public sealed class AgentLoopService : IAgentLoopService
         _stylistAgent = new ChatClientAgent(
             chatClient,
             instructions: """
-                You are a wardrobe stylist with direct access to the user's closet.
+                /no_think You are a wardrobe stylist with direct access to the user's closet.
                 Build a complete outfit (top, bottom, shoes; optionally hat and jacket) that fits the user request and weather summary provided by the previous agent.
 
                 WORKFLOW:
@@ -60,10 +64,7 @@ public sealed class AgentLoopService : IAgentLoopService
                 2. Call getClosetItemById as needed to compare colors/patterns qualitatively.
                 3. Call validateOutfitCompleteness with topId, bottomId, shoesId, and jacketId when applicable.
                    - If INCOMPLETE, fill missing slots and re-check.
-                4. Return ONLY compact JSON with these exact keys:
-                   topId, bottomId, shoesId, hatId, jacketId, usesHybridTopBottom, rationale.
-                   Use null for omitted hatId or jacketId.
-                   Do not use markdown fences and do not add any extra text.
+                     4. Return a concise final recommendation in plain language.
                 """,
             name: "stylist-agent",
             tools:
@@ -72,8 +73,6 @@ public sealed class AgentLoopService : IAgentLoopService
                 AIFunctionFactory.Create(GetClosetItemByIdTool, name: "getClosetItemById"),
                 AIFunctionFactory.Create(ValidateOutfitCompletenessTool, name: "validateOutfitCompleteness")
             ]);
-
-        _workflow = AgentWorkflowBuilder.BuildSequential("wardrobe-agent-workflow", [_weatherAgent, _stylistAgent]);
     }
 
     public async Task<AgentLoopResponse> RunAsync(AgentLoopRequest request, CancellationToken cancellationToken = default)
@@ -82,44 +81,133 @@ public sealed class AgentLoopService : IAgentLoopService
             ? NextConversationId()
             : request.ConversationId.Trim();
 
-        var inputMessages = new List<ChatMessage>
+        return await ExecuteAsync(request, key, streamContext: null, cancellationToken);
+    }
+
+    public async IAsyncEnumerable<AgentLoopStreamEvent> StreamAsync(
+        AgentLoopRequest request,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        var key = string.IsNullOrWhiteSpace(request.ConversationId)
+            ? NextConversationId()
+            : request.ConversationId.Trim();
+
+        var channel = Channel.CreateUnbounded<AgentLoopStreamEvent>(new UnboundedChannelOptions
         {
-            new(
-                ChatRole.User,
-                $"User prompt: {request.Prompt}\nBold mode: {request.BoldMode}\nMax page size: {Math.Clamp(request.PageSize, 4, 20)}")
-        };
+            SingleReader = true,
+            SingleWriter = false
+        });
 
-        await using var run = await InProcessExecution.RunAsync(_workflow, inputMessages, key, cancellationToken);
+        var streamContext = new StreamContext(key, channel.Writer);
 
-        var rawCandidate = ExtractWorkflowOutput(run);
-        var candidate = TryParseCandidate(rawCandidate);
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await ExecuteAsync(request, key, streamContext, cancellationToken);
+                channel.Writer.TryComplete();
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                channel.Writer.TryComplete();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Agent loop streaming failed for conversation {ConversationId}", key);
+                streamContext.TryWrite(new AgentLoopStreamEvent(
+                    key,
+                    streamContext.NextSequence(),
+                    AgentLoopEventType.Error,
+                    ex.Message));
+                channel.Writer.TryComplete(ex);
+            }
+        }, cancellationToken);
 
-        if (candidate is null)
-            throw new InvalidOperationException("Failed to parse candidate outfit from workflow response.");
+        await foreach (var item in channel.Reader.ReadAllAsync(cancellationToken))
+        {
+            yield return item;
+        }
+    }
 
-        var closet = _closetService.List();
-        var byId = closet.ToDictionary(item => item.Id);
+    private async Task<AgentLoopResponse> ExecuteAsync(
+        AgentLoopRequest request,
+        string conversationId,
+        StreamContext? streamContext,
+        CancellationToken cancellationToken)
+    {
+        using var scope = BeginStreamScope(streamContext);
 
-        var top = !string.IsNullOrWhiteSpace(candidate.TopId) && byId.TryGetValue(candidate.TopId, out var t) ? t : null;
-        var bottom = !string.IsNullOrWhiteSpace(candidate.BottomId) && byId.TryGetValue(candidate.BottomId, out var b) ? b : null;
-        var shoes = !string.IsNullOrWhiteSpace(candidate.ShoesId) && byId.TryGetValue(candidate.ShoesId, out var s) ? s : null;
-        var hat = !string.IsNullOrWhiteSpace(candidate.HatId) && byId.TryGetValue(candidate.HatId, out var h) ? h : null;
-        var jacket = !string.IsNullOrWhiteSpace(candidate.JacketId) && byId.TryGetValue(candidate.JacketId, out var j) ? j : null;
+        streamContext?.TryWrite(new AgentLoopStreamEvent(
+            conversationId,
+            streamContext.NextSequence(),
+            AgentLoopEventType.Status,
+            "Starting wardrobe workflow."));
 
-        var selection = new OutfitSelectionDto(top, bottom, shoes, hat, jacket, candidate.UsesHybridTopBottom);
-        var recommendation = new OutfitRecommendationDto(
-            selection,
-            Warnings: [],
-            Reasons: [candidate.Rationale],
-            AgentExplanation: $"Workflow completed. Rationale: {candidate.Rationale}");
+        var handoffs = new List<AgentHandoffTrace>();
 
-        return new AgentLoopResponse(
-            key,
-            recommendation,
-            candidate,
-            ToolCalls: [],
-            Handoffs: [],
-            Summary: "Completed sequential workflow using built-in workflow tracing.");
+        var weatherHandoff = new AgentHandoffTrace("user", _weatherAgent.Name ?? "weather-agent", "Collect weather constraints before styling.");
+        handoffs.Add(weatherHandoff);
+        streamContext?.TryWrite(new AgentLoopStreamEvent(
+            conversationId,
+            streamContext.NextSequence(),
+            AgentLoopEventType.Handoff,
+            weatherHandoff.Note,
+            Agent: weatherHandoff.To,
+            Handoff: weatherHandoff));
+
+        var weatherPrompt = $"User prompt: {request.Prompt}\nAnalyze the current forecast and summarize the outfit constraints in 2-3 concise sentences.";
+        var weatherResponse = await _weatherAgent.RunAsync(weatherPrompt, cancellationToken: cancellationToken);
+        var weatherText = weatherResponse.ToString();
+        streamContext?.TryWrite(new AgentLoopStreamEvent(
+            conversationId,
+            streamContext.NextSequence(),
+            AgentLoopEventType.AgentMessage,
+            weatherText,
+            Agent: _weatherAgent.Name));
+
+        var stylistHandoff = new AgentHandoffTrace(_weatherAgent.Name ?? "weather-agent", _stylistAgent.Name ?? "stylist-agent", "Weather summary ready. Build the outfit using closet tools.");
+        handoffs.Add(stylistHandoff);
+        streamContext?.TryWrite(new AgentLoopStreamEvent(
+            conversationId,
+            streamContext.NextSequence(),
+            AgentLoopEventType.Handoff,
+            stylistHandoff.Note,
+            Agent: stylistHandoff.To,
+            Handoff: stylistHandoff));
+
+        var cappedPageSize = Math.Clamp(request.PageSize, 4, 20);
+        var stylistPrompt = $"""
+            User prompt: {request.Prompt}
+            Weather summary: {weatherText}
+            Max page size for searchCloset: {cappedPageSize}
+            Build a complete outfit and explain the recommendation briefly.
+            """;
+        var stylistResponse = await _stylistAgent.RunAsync(stylistPrompt, cancellationToken: cancellationToken);
+        var stylistText = stylistResponse.ToString();
+        streamContext?.TryWrite(new AgentLoopStreamEvent(
+            conversationId,
+            streamContext.NextSequence(),
+            AgentLoopEventType.AgentMessage,
+            stylistText,
+            Agent: _stylistAgent.Name));
+
+        var toolCalls = streamContext?.SnapshotToolCalls() ?? [];
+        var response = new AgentLoopResponse(
+            conversationId,
+            stylistText,
+            ToolCalls: toolCalls,
+            Handoffs: handoffs,
+            Summary: $"Completed streaming workflow with {toolCalls.Count} tool calls across {handoffs.Count} handoffs.");
+
+        streamContext?.TryWrite(new AgentLoopStreamEvent(
+            conversationId,
+            streamContext.NextSequence(),
+            AgentLoopEventType.Complete,
+            "Workflow completed.",
+            Agent: _stylistAgent.Name,
+            Response: response));
+
+        return response;
     }
 
     [Description("Search closet inventory with bounded paging and filters for role, color, pattern, warmth, and weather safety. Accepts plain scalar values or single-value arrays.")]
@@ -156,13 +244,28 @@ public sealed class AgentLoopService : IAgentLoopService
             parsedPageSize);
 
         var result = _closetService.Search(request);
-        return JsonSerializer.Serialize(result, JsonOptions);
+        var payload = JsonSerializer.Serialize(result, JsonOptions);
+        ReportToolCall(new AgentToolCallTrace(
+            Agent: "stylist-agent",
+            Tool: "searchCloset",
+            Arguments: JsonSerializer.Serialize(request, JsonOptions),
+            ResultCount: result.Items.Count,
+            Summary: $"Found {result.Items.Count} closet item candidates."));
+
+        return payload;
     }
 
     [Description("Get a single closet item by ID.")]
     public string GetClosetItemByIdTool([Description("Closet item ID")] string itemId)
     {
         var item = _closetService.List().FirstOrDefault(x => x.Id == itemId);
+        ReportToolCall(new AgentToolCallTrace(
+            Agent: "stylist-agent",
+            Tool: "getClosetItemById",
+            Arguments: JsonSerializer.Serialize(new { itemId }, JsonOptions),
+            ResultCount: item is null ? 0 : 1,
+            Summary: item is null ? $"No closet item found for {itemId}." : $"Loaded closet item {item.Name}."));
+
         return item is null ? "null" : JsonSerializer.Serialize(item, JsonOptions);
     }
 
@@ -173,8 +276,15 @@ public sealed class AgentLoopService : IAgentLoopService
         var minTemp = forecast.Segments.Min(s => s.TemperatureC);
         var hasRain = forecast.Segments.Any(s => s.Precipitation is PrecipitationKind.Rain or PrecipitationKind.Drizzle or PrecipitationKind.Snow);
         var hasSun = forecast.Segments.Any(s => s.IsSunny);
+        var summary = $"minTemp={minTemp}; rain={hasRain}; sunny={hasSun}";
+        ReportToolCall(new AgentToolCallTrace(
+            Agent: "weather-agent",
+            Tool: "evaluateWeatherRisk",
+            Arguments: "{}",
+            ResultCount: forecast.Segments.Count,
+            Summary: $"Weather check: min temp {minTemp}C, rain={hasRain}, sunny={hasSun}."));
 
-        return $"minTemp={minTemp}; rain={hasRain}; sunny={hasSun}";
+        return summary;
     }
 
     [Description("Validate candidate outfit completeness. Returns COMPLETE or lists missing required slots.")]
@@ -196,63 +306,20 @@ public sealed class AgentLoopService : IAgentLoopService
         if (needsJacket && string.IsNullOrWhiteSpace(jacketId)) missing.Add($"jacket (required: rain={hasRain}, minTemp={minTemp}C)");
 
         return missing.Count == 0
-            ? "COMPLETE: all required slots are filled."
-            : $"INCOMPLETE: missing slots - {string.Join(", ", missing)}. Search for these and re-validate.";
+            ? RecordValidationResult("COMPLETE: all required slots are filled.", missing.Count)
+            : RecordValidationResult($"INCOMPLETE: missing slots - {string.Join(", ", missing)}. Search for these and re-validate.", missing.Count);
     }
 
-    private static string? ExtractWorkflowOutput(Run run)
+    private static string RecordValidationResult(string message, int missingCount)
     {
-        var outputEvent = run.OutgoingEvents.OfType<WorkflowOutputEvent>().LastOrDefault();
-        if (outputEvent is null)
-            return null;
+        ReportToolCall(new AgentToolCallTrace(
+            Agent: "stylist-agent",
+            Tool: "validateOutfitCompleteness",
+            Arguments: "validation-request",
+            ResultCount: missingCount,
+            Summary: message));
 
-        var messages = outputEvent.As<List<ChatMessage>>();
-        var lastText = messages?.LastOrDefault()?.Text;
-        if (!string.IsNullOrWhiteSpace(lastText))
-            return lastText;
-
-        return outputEvent.Data?.ToString();
-    }
-
-    private OutfitCandidateProposal? TryParseCandidate(string? raw)
-    {
-        if (string.IsNullOrWhiteSpace(raw))
-            return null;
-
-        var payload = raw.Trim();
-
-        if (payload.StartsWith("```") && payload.Contains('\n'))
-        {
-            var firstNewLine = payload.IndexOf('\n');
-            var lastFence = payload.LastIndexOf("```");
-            if (firstNewLine > 0 && lastFence > firstNewLine)
-                payload = payload[(firstNewLine + 1)..lastFence].Trim();
-        }
-
-        try
-        {
-            return JsonSerializer.Deserialize<OutfitCandidateProposal>(payload, JsonOptions);
-        }
-        catch
-        {
-        }
-
-        try
-        {
-            using var doc = JsonDocument.Parse(payload);
-            var root = doc.RootElement;
-
-            if (root.TryGetProperty("parameters", out var parameters))
-                return JsonSerializer.Deserialize<OutfitCandidateProposal>(parameters.GetRawText(), JsonOptions);
-
-            if (root.TryGetProperty("candidate", out var candidate))
-                return JsonSerializer.Deserialize<OutfitCandidateProposal>(candidate.GetRawText(), JsonOptions);
-        }
-        catch
-        {
-        }
-
-        return null;
+        return message;
     }
 
     private static bool? ParseOptionalBool(JsonElement? value)
@@ -356,5 +423,62 @@ public sealed class AgentLoopService : IAgentLoopService
     {
         var value = Interlocked.Increment(ref ConversationCounter) % 10000;
         return $"conv{value:0000}";
+    }
+
+    private static IDisposable? BeginStreamScope(StreamContext? streamContext)
+    {
+        var previous = CurrentStreamContext.Value;
+        CurrentStreamContext.Value = streamContext;
+        return new StreamScope(previous);
+    }
+
+    private static void ReportToolCall(AgentToolCallTrace trace)
+    {
+        var streamContext = CurrentStreamContext.Value;
+        streamContext?.RecordToolCall(trace);
+    }
+
+    private sealed class StreamScope(StreamContext? previous) : IDisposable
+    {
+        public void Dispose()
+        {
+            CurrentStreamContext.Value = previous;
+        }
+    }
+
+    private sealed class StreamContext(string conversationId, ChannelWriter<AgentLoopStreamEvent> writer)
+    {
+        private readonly object _gate = new();
+        private readonly List<AgentToolCallTrace> _toolCalls = [];
+        private int _sequence;
+
+        public int NextSequence() => Interlocked.Increment(ref _sequence);
+
+        public void RecordToolCall(AgentToolCallTrace trace)
+        {
+            lock (_gate)
+            {
+                _toolCalls.Add(trace);
+            }
+
+            TryWrite(new AgentLoopStreamEvent(
+                conversationId,
+                NextSequence(),
+                AgentLoopEventType.Tool,
+                trace.Summary,
+                Agent: trace.Agent,
+                Tool: trace.Tool,
+                ToolCall: trace));
+        }
+
+        public IReadOnlyList<AgentToolCallTrace> SnapshotToolCalls()
+        {
+            lock (_gate)
+            {
+                return _toolCalls.ToArray();
+            }
+        }
+
+        public bool TryWrite(AgentLoopStreamEvent item) => writer.TryWrite(item);
     }
 }

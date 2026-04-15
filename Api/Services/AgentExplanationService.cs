@@ -28,7 +28,7 @@ public sealed class AgentExplanationService(IChatClient chatClient, ILogger<Agen
             var weatherSummary = string.Join(", ", forecast.Segments.Select(s => $"{s.Segment}: {s.TemperatureC}C, {s.Precipitation}, sunny={s.IsSunny}"));
 
             var weatherNote = await _weatherAgent.RunAsync($"Forecast: {weatherSummary}. Give 2 concise constraints for outfit planning.", cancellationToken: cancellationToken);
-            var styleNote = await _stylistAgent.RunAsync($"User prompt: {request.Prompt}. Bold mode: {request.BoldMode}. Closet: {closetSummary}. Suggest styling intent in 2 sentences.", cancellationToken: cancellationToken);
+            var styleNote = await _stylistAgent.RunAsync($"User prompt: {request.Prompt}. Closet: {closetSummary}. Suggest styling intent in 2 sentences.", cancellationToken: cancellationToken);
             var rulesNote = await _rulesAgent.RunAsync($"Given forecast ({weatherSummary}) and closet ({closetSummary}), list 3 checks: required layers, rain handling, pattern harmony.", cancellationToken: cancellationToken);
 
             return $"Weather agent: {weatherNote}\nStylist agent: {styleNote}\nRules agent: {rulesNote}";

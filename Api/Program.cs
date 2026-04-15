@@ -1,10 +1,13 @@
 using Api.Services;
 using Microsoft.Agents.AI;
+using Microsoft.AspNetCore.Http.Features;
 using Microsoft.Extensions.AI;
 using OllamaSharp;
 using Shared.Contracts;
+using System.Text.Json;
 
 var builder = WebApplication.CreateBuilder(args);
+var streamJsonOptions = new JsonSerializerOptions(JsonSerializerDefaults.Web);
 
 builder.AddServiceDefaults();
 
@@ -124,6 +127,34 @@ app.MapPost("/api/chat/agent-loop", async (
 
     var response = await loopService.RunAsync(request, cancellationToken);
     return Results.Ok(response);
+});
+
+app.MapPost("/api/chat/agent-loop/stream", async (
+    HttpContext context,
+    AgentLoopRequest request,
+    IAgentLoopService loopService,
+    CancellationToken cancellationToken) =>
+{
+    if (string.IsNullOrWhiteSpace(request.Prompt))
+    {
+        context.Response.StatusCode = StatusCodes.Status400BadRequest;
+        await context.Response.WriteAsJsonAsync(new { error = "Prompt is required." }, cancellationToken);
+        return;
+    }
+
+    context.Features.Get<IHttpResponseBodyFeature>()?.DisableBuffering();
+    context.Response.ContentType = "application/x-ndjson";
+    context.Response.Headers.CacheControl = "no-cache";
+    context.Response.Headers.Append("X-Accel-Buffering", "no");
+
+    await context.Response.StartAsync(cancellationToken);
+
+    await foreach (var item in loopService.StreamAsync(request, cancellationToken))
+    {
+        await JsonSerializer.SerializeAsync(context.Response.Body, item, streamJsonOptions, cancellationToken);
+        await context.Response.WriteAsync("\n", cancellationToken);
+        await context.Response.Body.FlushAsync(cancellationToken);
+    }
 });
 
 app.MapDefaultEndpoints();

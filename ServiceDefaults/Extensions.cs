@@ -36,9 +36,9 @@ public static class Extensions
                 options.Retry.MaxRetryAttempts = 1;
 
                 // Chat completions can take longer than the default resilience timeout.
-                options.TotalRequestTimeout.Timeout = TimeSpan.FromMinutes(3);
-                options.AttemptTimeout.Timeout = TimeSpan.FromMinutes(2);
-                options.CircuitBreaker.SamplingDuration = TimeSpan.FromMinutes(5);
+                options.TotalRequestTimeout.Timeout = TimeSpan.FromMinutes(5);
+                options.AttemptTimeout.Timeout = TimeSpan.FromMinutes(5);
+                options.CircuitBreaker.SamplingDuration = TimeSpan.FromMinutes(10);
             });
 
             // Turn on service discovery by default

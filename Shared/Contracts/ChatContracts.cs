@@ -1,6 +1,6 @@
 namespace Shared.Contracts;
 
-public sealed record ChatRequest(string Prompt, bool BoldMode = false);
+public sealed record ChatRequest(string Prompt);
 
 public sealed record OutfitSelectionDto(
     ClosetItemDto? Top,
@@ -18,7 +18,6 @@ public sealed record OutfitRecommendationDto(
 
 public sealed record AgentLoopRequest(
     string Prompt,
-    bool BoldMode = false,
     string? ConversationId = null,
     int MaxToolCalls = 6,
     int PageSize = 12);
@@ -46,8 +45,28 @@ public sealed record AgentHandoffTrace(
 
 public sealed record AgentLoopResponse(
     string ConversationId,
-    OutfitRecommendationDto Recommendation,
-    OutfitCandidateProposal Candidate,
+    string AgentResponse,
     IReadOnlyList<AgentToolCallTrace> ToolCalls,
     IReadOnlyList<AgentHandoffTrace> Handoffs,
     string Summary);
+
+public static class AgentLoopEventType
+{
+    public const string Status = "status";
+    public const string Handoff = "handoff";
+    public const string Tool = "tool";
+    public const string AgentMessage = "agent-message";
+    public const string Complete = "complete";
+    public const string Error = "error";
+}
+
+public sealed record AgentLoopStreamEvent(
+    string ConversationId,
+    int Sequence,
+    string EventType,
+    string Message,
+    string? Agent = null,
+    string? Tool = null,
+    AgentToolCallTrace? ToolCall = null,
+    AgentHandoffTrace? Handoff = null,
+    AgentLoopResponse? Response = null);
