@@ -202,7 +202,7 @@ public sealed class AgentLoopService : IAgentLoopService
 
     private static string? ExtractWorkflowOutput(Run run)
     {
-        var outputEvent = run.NewEvents.OfType<WorkflowOutputEvent>().LastOrDefault();
+        var outputEvent = run.OutgoingEvents.OfType<WorkflowOutputEvent>().LastOrDefault();
         if (outputEvent is null)
             return null;
 
