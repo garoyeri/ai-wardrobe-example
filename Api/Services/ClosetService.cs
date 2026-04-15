@@ -174,7 +174,6 @@ public sealed class ClosetService : IClosetService
         var rand = new Random(42); // Fixed seed for reproducibility
 
         // Helper method to get random colors and patterns
-        string[] colors = ["black", "navy", "charcoal", "white", "cream", "gray", "tan", "beige", "olive", "burgundy", "navy", "blue", "green", "pink", "red"];
         string[] patterns = ["solid", "striped", "plaid", "floral", "solid"];
         string[] materials = ["cotton", "wool", "polyester", "linen", "denim", "leather"];
         MaterialWeight[] weights = [MaterialWeight.Light, MaterialWeight.Light, MaterialWeight.Medium, MaterialWeight.Medium, MaterialWeight.Heavy];
@@ -193,13 +192,65 @@ public sealed class ClosetService : IClosetService
             "Gray Turtleneck", "Blue Flannel", "Navy Thermal", "Charcoal Crew", "White Camisole",
             "Burgundy Tank", "Olive Sweater", "Cream Cardigan", "Navy Henley", "Gray Sweater Vest"
         ];
+        string[] topColors = [
+            "white",     // White T-Shirt
+            "navy",      // Navy Polo
+            "charcoal",  // Charcoal Henley
+            "cream",     // Cream Button-Up
+            "blue",      // Blue Chambray
+            "gray",      // Gray Sweater
+            "black",     // Black Turtleneck
+            "olive",     // Olive Crew Neck
+            "burgundy",  // Burgundy Cardigan
+            "white",     // White Linen Shirt
+            "navy",      // Striped Breton (navy/white breton stripes)
+            "red",       // Red Sweater
+            "tan",       // Tan Cable Knit
+            "navy",      // Navy Peacoat Top
+            "green",     // Green Hoodie
+            "pink",      // Floral Blouse
+            "white",     // White Oxford
+            "charcoal",  // Charcoal Thermal
+            "navy",      // Navy Cashmere
+            "blue",      // Blue Denim Shirt
+            "gray",      // Gray Hoodie
+            "cream",     // Cream Sweater
+            "black",     // Black Leather Jacket Liner
+            "red",       // Plaid Flannel (classic red plaid)
+            "white",     // Solid Tee
+            "navy",      // Navy Sweater
+            "white",     // White Tank
+            "charcoal",  // Charcoal V-Neck
+            "burgundy",  // Burgundy Pullover
+            "beige",     // Beige Blazer
+            "blue",      // Blue Striped Shirt
+            "gray",      // Gray Cardigan
+            "olive",     // Olive Shirt
+            "cream",     // Cream Cable Sweater
+            "white",     // White Crop Top
+            "navy",      // Navy Vest
+            "charcoal",  // Charcoal Hoodie
+            "red",       // Red Polo
+            "tan",       // Tan Shirt
+            "black",     // Black Sweater
+            "gray",      // Gray Turtleneck
+            "blue",      // Blue Flannel
+            "navy",      // Navy Thermal
+            "charcoal",  // Charcoal Crew
+            "white",     // White Camisole
+            "burgundy",  // Burgundy Tank
+            "olive",     // Olive Sweater
+            "cream",     // Cream Cardigan
+            "navy",      // Navy Henley
+            "gray",      // Gray Sweater Vest
+        ];
         for (int i = 0; i < 50; i++)
         {
             items.Add(new ClosetItemDto(
                 CreateSeedId(RolePrefixes[OutfitRole.Top], i + 1),
                 topNames[i],
                 [OutfitRole.Top],
-                [colors[rand.Next(colors.Length)]],
+                [topColors[i]],
                 [patterns[rand.Next(patterns.Length)]],
                 materials[rand.Next(materials.Length)],
                 weights[rand.Next(weights.Length)],
@@ -217,13 +268,40 @@ public sealed class ClosetService : IClosetService
             "Denim Shorts", "Wool Trousers", "Cotton Pants", "Navy Cargo", "Beige Chinos",
             "Black Trousers", "Blue Shorts", "Gray Jeans", "Tan Pants", "Charcoal Shorts"
         ];
+        string[] bottomColors = [
+            "navy",      // Navy Chinos
+            "black",     // Black Jeans
+            "gray",      // Gray Trousers
+            "tan",       // Tan Shorts
+            "charcoal",  // Charcoal Slacks
+            "blue",      // Blue Jeans
+            "black",     // Black Leggings
+            "olive",     // Cargo Pants (classic olive/military color)
+            "white",     // White Linen Pants
+            "navy",      // Navy Shorts
+            "beige",     // Khaki Chinos (khaki = beige)
+            "navy",      // Dark Jeans (dark wash = navy)
+            "gray",      // Gray Joggers
+            "olive",     // Olive Pants
+            "black",     // Black Shorts
+            "blue",      // Denim Shorts (denim = blue)
+            "charcoal",  // Wool Trousers (classic charcoal wool)
+            "beige",     // Cotton Pants (neutral beige)
+            "navy",      // Navy Cargo
+            "beige",     // Beige Chinos
+            "black",     // Black Trousers
+            "blue",      // Blue Shorts
+            "gray",      // Gray Jeans
+            "tan",       // Tan Pants
+            "charcoal",  // Charcoal Shorts
+        ];
         for (int i = 0; i < 25; i++)
         {
             items.Add(new ClosetItemDto(
                 CreateSeedId(RolePrefixes[OutfitRole.Bottom], i + 1),
                 bottomNames[i],
                 [OutfitRole.Bottom],
-                [colors[rand.Next(colors.Length)]],
+                [bottomColors[i]],
                 [patterns[rand.Next(patterns.Length)]],
                 materials[rand.Next(materials.Length)],
                 weights[rand.Next(weights.Length)],
@@ -239,13 +317,30 @@ public sealed class ClosetService : IClosetService
             "Olive Bomber", "Charcoal Cardigan Jacket", "Beige Cardigan", "Blue Windbreaker", "Black Puffer",
             "Navy Wool Coat", "Tan Cardigan", "Gray Blazer", "Blue Denim Overshirt", "Burgundy Sweater Jacket"
         ];
+        string[] jacketColors = [
+            "tan",       // Tan Trench Coat
+            "blue",      // Blue Denim Jacket
+            "black",     // Black Leather Jacket
+            "navy",      // Navy Blazer
+            "gray",      // Gray Wool Coat
+            "olive",     // Olive Bomber
+            "charcoal",  // Charcoal Cardigan Jacket
+            "beige",     // Beige Cardigan
+            "blue",      // Blue Windbreaker
+            "black",     // Black Puffer
+            "navy",      // Navy Wool Coat
+            "tan",       // Tan Cardigan
+            "gray",      // Gray Blazer
+            "blue",      // Blue Denim Overshirt
+            "burgundy",  // Burgundy Sweater Jacket
+        ];
         for (int i = 0; i < 15; i++)
         {
             items.Add(new ClosetItemDto(
                 CreateSeedId(RolePrefixes[OutfitRole.Jacket], i + 1),
                 jacketNames[i],
                 [OutfitRole.Jacket],
-                [colors[rand.Next(colors.Length)]],
+                [jacketColors[i]],
                 [patterns[rand.Next(patterns.Length)]],
                 materials[rand.Next(materials.Length)],
                 weights[rand.Next(weights.Length)],
@@ -259,13 +354,20 @@ public sealed class ClosetService : IClosetService
         string[] hatNames = [
             "Cream Sun Hat", "Black Baseball Cap", "Navy Beanie", "Tan Fedora", "Gray Wool Hat"
         ];
+        string[] hatColors = [
+            "cream",  // Cream Sun Hat
+            "black",  // Black Baseball Cap
+            "navy",   // Navy Beanie
+            "tan",    // Tan Fedora
+            "gray",   // Gray Wool Hat
+        ];
         for (int i = 0; i < 5; i++)
         {
             items.Add(new ClosetItemDto(
                 CreateSeedId(RolePrefixes[OutfitRole.Hat], i + 1),
                 hatNames[i],
                 [OutfitRole.Hat],
-                [colors[rand.Next(colors.Length)]],
+                [hatColors[i]],
                 [patterns[rand.Next(patterns.Length)]],
                 materials[rand.Next(materials.Length)],
                 weights[rand.Next(weights.Length)],
@@ -279,13 +381,20 @@ public sealed class ClosetService : IClosetService
         string[] shoeNames = [
             "Black Chelsea Boots", "White Sneakers", "Brown Loafers", "Navy Trainers", "Tan Desert Boots"
         ];
+        string[] shoeColors = [
+            "black",  // Black Chelsea Boots
+            "white",  // White Sneakers
+            "brown",  // Brown Loafers
+            "navy",   // Navy Trainers
+            "tan",    // Tan Desert Boots
+        ];
         for (int i = 0; i < 5; i++)
         {
             items.Add(new ClosetItemDto(
                 CreateSeedId(RolePrefixes[OutfitRole.Shoes], i + 1),
                 shoeNames[i],
                 [OutfitRole.Shoes],
-                [colors[rand.Next(colors.Length)]],
+                [shoeColors[i]],
                 [patterns[rand.Next(patterns.Length)]],
                 materials[rand.Next(materials.Length)],
                 weights[rand.Next(weights.Length)],
