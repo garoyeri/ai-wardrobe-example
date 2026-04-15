@@ -22,6 +22,7 @@ public sealed class AgentLoopService : IAgentLoopService
     private readonly IClosetService _closetService;
     private readonly IWeatherService _weatherService;
     private readonly ILogger<AgentLoopService> _logger;
+    private readonly IConversationCancellationManager _cancellationManager;
     private readonly Dictionary<string, ConversationState> _conversationState = new(StringComparer.OrdinalIgnoreCase);
     private readonly Lock _conversationGate = new();
 
@@ -33,10 +34,12 @@ public sealed class AgentLoopService : IAgentLoopService
         IChatClient chatClient,
         IClosetService closetService,
         IWeatherService weatherService,
+        IConversationCancellationManager cancellationManager,
         ILogger<AgentLoopService> logger)
     {
         _closetService = closetService;
         _weatherService = weatherService;
+        _cancellationManager = cancellationManager;
         _logger = logger;
 
         _weatherAgent = new ChatClientAgent(
@@ -114,16 +117,26 @@ public sealed class AgentLoopService : IAgentLoopService
             ? NextConversationId()
             : request.ConversationId.Trim();
 
-        var sequence = 0;
-        AgentLoopResponse? finalResponse = null;
-        var handoffs = new List<AgentHandoffTrace>
-        {
-            new("user", "weather-agent", "Collect weather constraints from latest forecast."),
-            new("weather-agent", "stylist-agent", "Weather guidance is ready for outfit generation.")
-        };
+        // Get or create a CancellationTokenSource for this conversation
+        var conversationCts = _cancellationManager.GetOrCreateSource(conversationId);
+        
+        // Create a linked token source that combines both the external cancellation token
+        // and the conversation-specific cancellation token
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, conversationCts.Token);
+        var combinedToken = linkedCts.Token;
 
-        var state = GetOrCreateConversationState(conversationId);
-        var (contextSummary, recentTranscript, summaryApplied) = await BuildContextWindowAsync(state, request.Prompt, cancellationToken);
+        try
+        {
+            var sequence = 0;
+            AgentLoopResponse? finalResponse = null;
+            var handoffs = new List<AgentHandoffTrace>
+            {
+                new("user", "weather-agent", "Collect weather constraints from latest forecast."),
+                new("weather-agent", "stylist-agent", "Weather guidance is ready for outfit generation.")
+            };
+
+            var state = GetOrCreateConversationState(conversationId);
+            var (contextSummary, recentTranscript, summaryApplied) = await BuildContextWindowAsync(state, request.Prompt, combinedToken);
 
         if (summaryApplied)
         {
@@ -170,7 +183,7 @@ public sealed class AgentLoopService : IAgentLoopService
             "Workflow started in streaming mode.",
             Stage: "workflow");
 
-        await foreach (var evt in run.WatchStreamAsync().WithCancellation(cancellationToken))
+        await foreach (var evt in run.WatchStreamAsync().WithCancellation(combinedToken))
         {
             switch (evt)
             {
@@ -281,6 +294,12 @@ public sealed class AgentLoopService : IAgentLoopService
         }
 
         state.AppendTurn(request.Prompt, finalResponse.AgentResponse);
+        }
+        finally
+        {
+            // Clean up the cancellation token source when the stream completes
+            _cancellationManager.Cleanup(conversationId);
+        }
     }
 
     [Description("Search closet inventory with bounded paging and filters for role, color, pattern, warmth, and weather safety. Accepts plain scalar values or single-value arrays.")]

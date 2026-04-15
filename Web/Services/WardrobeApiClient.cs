@@ -114,4 +114,15 @@ public sealed class WardrobeApiClient(HttpClient httpClient)
             }
         }
     }
+
+    public async Task StopConversationAsync(string conversationId, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(conversationId))
+        {
+            throw new ArgumentException("Conversation ID is required.", nameof(conversationId));
+        }
+
+        var response = await httpClient.PostAsync($"/api/chat/stop/{conversationId}", null, cancellationToken);
+        response.EnsureSuccessStatusCode();
+    }
 }

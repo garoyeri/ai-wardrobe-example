@@ -37,6 +37,7 @@ builder.Services.AddSingleton<IClosetService, ClosetService>();
 builder.Services.AddSingleton<IWeatherService, WeatherService>();
 builder.Services.AddSingleton<IOutfitRecommendationService, OutfitRecommendationService>();
 builder.Services.AddSingleton<IAgentExplanationService, AgentExplanationService>();
+builder.Services.AddSingleton<IConversationCancellationManager, ConversationCancellationManager>();
 builder.Services.AddSingleton<IAgentLoopService, AgentLoopService>();
 
 var app = builder.Build();
@@ -161,6 +162,26 @@ app.MapPost("/api/chat/agent-loop/stream", async (
         await context.Response.WriteAsync("\n", cancellationToken);
         await context.Response.Body.FlushAsync(cancellationToken);
     }
+});
+
+app.MapPost("/api/chat/stop/{conversationId}", (
+    string conversationId,
+    IConversationCancellationManager cancellationManager) =>
+{
+    if (string.IsNullOrWhiteSpace(conversationId))
+    {
+        return Results.BadRequest("Conversation ID is required.");
+    }
+
+    var wasCancelled = cancellationManager.RequestCancel(conversationId);
+    
+    return Results.Ok(new 
+    { 
+        success = wasCancelled, 
+        message = wasCancelled 
+            ? "Chat conversation has been stopped." 
+            : "No active conversation found with the specified ID."
+    });
 });
 
 app.MapDefaultEndpoints();

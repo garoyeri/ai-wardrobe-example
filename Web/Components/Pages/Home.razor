@@ -79,6 +79,12 @@
 			<button class="btn btn-primary" @onclick="SendMessageAsync" disabled="@isBusy || string.IsNullOrWhiteSpace(currentMessage)">
 				@(isBusy ? "Thinking..." : "Send")
 			</button>
+			@if (isBusy && !string.IsNullOrWhiteSpace(agentConversationId))
+			{
+				<button class="btn btn-danger" @onclick="StopChatAsync">
+					⊗ Stop
+				</button>
+			}
 		</div>
 
 		@if (!string.IsNullOrWhiteSpace(errorMessage))
@@ -326,6 +332,27 @@
 			currentMessage = string.Empty;
 			agentConversationId = null;
 			errorMessage = null;
+		});
+	}
+
+	private async Task StopChatAsync()
+	{
+		if (string.IsNullOrWhiteSpace(agentConversationId))
+		{
+			return;
+		}
+
+		await ExecuteAsync(async () =>
+		{
+			try
+			{
+				await ApiClient.StopConversationAsync(agentConversationId);
+				AddChatMessage(ChatMessageKind.System, "Chat stopped by user.", "System");
+			}
+			catch (Exception ex)
+			{
+				errorMessage = $"Failed to stop chat: {ex.Message}";
+			}
 		});
 	}
 
@@ -592,6 +619,7 @@
 		{
 			ChatMessageKind.User => "bg-primary text-white",
 			ChatMessageKind.Agent => "bg-light",
+			ChatMessageKind.System => "bg-info text-white",
 			_ => "bg-warning-subtle border"
 		};
 	}
@@ -600,7 +628,8 @@
 	{
 		User,
 		Agent,
-		Workflow
+		Workflow,
+		System
 	}
 
 	private sealed class ClosetItemFormModel
