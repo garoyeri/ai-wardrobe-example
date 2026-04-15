@@ -23,10 +23,6 @@ public sealed class AgentLoopService : IAgentLoopService
 
     private static readonly AsyncLocal<List<AgentToolCallTrace>?> ActiveTrace = new();
     private static readonly AsyncLocal<string?> ActiveToolAgent = new();
-    // Use a single-element array as a mutable container so that child async contexts
-    // can write back to the parent — direct AsyncLocal value reassignment in a child
-    // is not visible to the parent.
-    private static readonly AsyncLocal<OutfitCandidateProposal?[]?> ActiveCapture = new();
 
     private static readonly HashSet<string> NeutralColors =
     [
@@ -47,8 +43,6 @@ public sealed class AgentLoopService : IAgentLoopService
 
     private readonly ChatClientAgent _stylistAgent;
     private readonly ChatClientAgent _weatherAgent;
-    private readonly ChatClientAgent _validationAgent;
-
     public AgentLoopService(
         IChatClient chatClient,
         IClosetService closetService,
@@ -72,29 +66,6 @@ public sealed class AgentLoopService : IAgentLoopService
                 AIFunctionFactory.Create(EvaluateWeatherRiskTool, name: "evaluateWeatherRisk")
             ]);
 
-        _validationAgent = new ChatClientAgent(
-            chatClient,
-            instructions: """
-                You are an outfit validation agent.
-                Validate the stylist's submitted outfit against weather and styling constraints using tools.
-
-                REQUIRED CHECKS:
-                1. Call evaluateWeatherRisk to understand temperature and precipitation constraints.
-                2. Call validateOutfitCompleteness with the candidate IDs to verify required slots for current weather.
-                3. Call getClosetItemById for top and bottom and check pattern/color pairing with
-                   checkPatternCompatibility and checkColorCompatibility.
-                4. Return 2-3 concise sentences summarizing pass/fail and any concrete risks.
-                """,
-            name: "validation-agent",
-            tools:
-            [
-                AIFunctionFactory.Create(EvaluateWeatherRiskTool, name: "evaluateWeatherRisk"),
-                AIFunctionFactory.Create(ValidateOutfitCompletenessTool, name: "validateOutfitCompleteness"),
-                AIFunctionFactory.Create(GetClosetItemByIdTool, name: "getClosetItemById"),
-                AIFunctionFactory.Create(CheckPatternCompatibilityTool, name: "checkPatternCompatibility"),
-                AIFunctionFactory.Create(CheckColorCompatibilityTool, name: "checkColorCompatibility")
-            ]);
-
         _stylistAgent = new ChatClientAgent(
             chatClient,
             instructions: """
@@ -104,22 +75,20 @@ public sealed class AgentLoopService : IAgentLoopService
                 WORKFLOW:
                 1. Use the weather summary passed in your prompt — do NOT call a weather tool.
                 2. Call searchCloset with relevant filters (role, color, warmth, waterproof, formality) to discover candidates. Use page sizes of 10.
-                3. Pick the best items for each slot. Call checkColorCompatibility and checkPatternCompatibility to validate pairings.
+                3. Pick the best items for each slot. Call getClosetItemById as needed and judge both color harmony and pattern harmony qualitatively from the returned item details.
                 4. Call validateOutfitCompleteness with your chosen topId, bottomId, shoesId.
                    - If the result is INCOMPLETE, identify which slot is missing and repeat searchCloset to fill it, then re-validate.
                    - Keep iterating until validateOutfitCompleteness confirms the outfit is complete.
-                5. Once validateOutfitCompleteness returns COMPLETE, call submitOutfit with the chosen IDs and a one-sentence rationale.
-                    Do NOT output JSON. Do NOT write any explanation. ONLY call submitOutfit.
+                5. Once you have a complete outfit, return ONLY a compact JSON object with these exact keys:
+                   topId, bottomId, shoesId, hatId, jacketId, usesHybridTopBottom, rationale.
+                   Use null for omitted hatId or jacketId. Do not wrap the JSON in markdown. Do not add any explanation before or after it.
                 """,
             name: "stylist-agent",
             tools:
             [
                 AIFunctionFactory.Create(SearchClosetTool, name: "searchCloset"),
                 AIFunctionFactory.Create(GetClosetItemByIdTool, name: "getClosetItemById"),
-                AIFunctionFactory.Create(CheckPatternCompatibilityTool, name: "checkPatternCompatibility"),
-                AIFunctionFactory.Create(CheckColorCompatibilityTool, name: "checkColorCompatibility"),
-                AIFunctionFactory.Create(ValidateOutfitCompletenessTool, name: "validateOutfitCompleteness"),
-                AIFunctionFactory.Create(SubmitOutfitTool, name: "submitOutfit")
+                AIFunctionFactory.Create(ValidateOutfitCompletenessTool, name: "validateOutfitCompleteness")
             ]);
     }
 
@@ -144,10 +113,9 @@ public sealed class AgentLoopService : IAgentLoopService
         _logger.LogInformation("Initializing trace collection with empty list");
         ActiveTrace.Value = toolTraces;
 
-        // Weather and validation agents get fresh ephemeral sessions each request to prevent their
+        // Weather agent gets a fresh ephemeral session each request to prevent its
         // conversation history from polluting the stylist's persistent context.
         var weatherSession = await _weatherAgent.CreateSessionAsync();
-        var validationSession = await _validationAgent.CreateSessionAsync();
 
         ActiveToolAgent.Value = "weather-agent";
         var weatherSummary = await RunWithHandoffAsync(
@@ -159,12 +127,11 @@ public sealed class AgentLoopService : IAgentLoopService
         ActiveToolAgent.Value = null;
 
         ActiveToolAgent.Value = "stylist-agent";
-        ActiveCapture.Value = new OutfitCandidateProposal?[1];
         var candidateResponse = await RunWithHandoffAsync(
             handoffs,
             from: "weather-agent",
             to: "stylist-agent",
-            note: "Search closet, validate completeness, iterate until outfit is complete",
+            note: "Search closet, validate completeness, then return a final outfit candidate as JSON",
             () => _stylistAgent.RunAsync(
                 $"Prompt: {request.Prompt}\nBold mode: {request.BoldMode}\nWeather constraints: {weatherSummary}\nMax page size: {Math.Clamp(request.PageSize, 4, 20)}",
                 session,
@@ -173,42 +140,21 @@ public sealed class AgentLoopService : IAgentLoopService
         ActiveToolAgent.Value = null;
 
         _logger.LogInformation("Raw stylist response: {CandidateResponse}", candidateResponse);
-        var candidate = ActiveCapture.Value?[0];
+        var candidate = TryParseCandidate(candidateResponse.ToString());
 
-        // Fallback: the local model may output tool-call JSON as plain text rather than
-        // executing the function. Parse it directly from the response string.
-        if (candidate is null)
-        {
-            candidate = TryParseCandidate(candidateResponse.ToString());
-            if (candidate is not null)
-                _logger.LogInformation("Candidate parsed from raw response text (model did not invoke tool natively).");
-        }
+        if (candidate is not null)
+            _logger.LogInformation("Candidate parsed from raw stylist response text.");
 
         if (candidate is null)
         {
-            _logger.LogError("Stylist did not call submitOutfit. Raw response: {CandidateResponse}", candidateResponse);
+            _logger.LogError("Stylist did not return a valid candidate JSON object. Raw response: {CandidateResponse}", candidateResponse);
             throw new InvalidOperationException("Failed to parse candidate outfit from agent response.");
         }
-
-        ActiveToolAgent.Value = "validation-agent";
-        var validationSummary = await RunWithHandoffAsync(
-            handoffs,
-            from: "stylist-agent",
-            to: "validation-agent",
-            note: "Validate weather fit and style pairing using tools",
-            () => _validationAgent.RunAsync(
-                $"Candidate IDs: topId={candidate.TopId}, bottomId={candidate.BottomId}, shoesId={candidate.ShoesId}, hatId={candidate.HatId}, jacketId={candidate.JacketId}. " +
-                $"Weather summary from weather-agent: {weatherSummary}. " +
-                "Run the required checks and return concise validation notes.",
-                validationSession,
-                options: null,
-                cancellationToken));
-        ActiveToolAgent.Value = null;
 
         ActiveTrace.Value = null;
         _logger.LogInformation("Trace collection complete. Total tool calls captured: {ToolCallCount}", toolTraces.Count);
 
-        var explanation = $"Agent workflow summary:\nWeather: {weatherSummary}\nValidation: {validationSummary}";
+        var explanation = $"Agent workflow summary:\nWeather: {weatherSummary}\nRationale: {candidate.Rationale}";
 
         // Create a deterministic recommendation from the candidate for display purposes
         var closet = _closetService.List();
@@ -232,7 +178,7 @@ public sealed class AgentLoopService : IAgentLoopService
             candidate,
             toolTraces,
             handoffs,
-            Summary: "Completed Agent Framework handoff flow with tool-enabled closet search.");
+            Summary: "Completed simplified agent flow with weather handoff and direct stylist JSON output.");
     }
 
     private async Task<string> RunWithHandoffAsync(
@@ -247,28 +193,38 @@ public sealed class AgentLoopService : IAgentLoopService
         return response.ToString();
     }
 
-    [Description("Search closet inventory with bounded paging and filters for role, color, pattern, warmth, and weather safety.")]
+    [Description("Search closet inventory with bounded paging and filters for role, color, pattern, warmth, and weather safety. Accepts plain scalar values or single-value arrays.")]
     public string SearchClosetTool(
-        [Description("Optional role filter, for example Top or Shoes")] OutfitRole? role = null,
-        [Description("Optional color filter, for example navy or white")] string? color = null,
-        [Description("Optional pattern filter, for example solid or floral")] string? pattern = null,
-        [Description("Optional minimum warmth value from 1 to 5")] int? minWarmth = null,
-        [Description("Optional maximum warmth value from 1 to 5")] int? maxWarmth = null,
-        [Description("Optional waterproof requirement")] bool? waterproof = null,
-        [Description("Optional formality filter")] FormalityLevel? formality = null,
-        [Description("1-based page number")] int pageNumber = 1,
-        [Description("Page size between 1 and 50")] int pageSize = 12)
+        [Description("Optional role filter, valid values are Top, Bottom, Shoes, Hat, Jacket. Scalar or single-value array accepted.")] JsonElement? role = null,
+        [Description("Optional color filter, for example navy or white. Scalar or single-value array accepted.")] JsonElement? color = null,
+        [Description("Optional pattern filter, for example solid or floral. Scalar or single-value array accepted.")] JsonElement? pattern = null,
+        [Description("Optional minimum warmth value from 1 to 5. Scalar or single-value array accepted.")] JsonElement? minWarmth = null,
+        [Description("Optional maximum warmth value from 1 to 5. Scalar or single-value array accepted.")] JsonElement? maxWarmth = null,
+        [Description("Optional waterproof requirement. Scalar or single-value array accepted.")] JsonElement? waterproof = null,
+        [Description("Optional formality filter, valid values are Casual, SmartCasual, Formal. Scalar or single-value array accepted.")] JsonElement? formality = null,
+        [Description("1-based page number. Scalar or single-value array accepted.")] JsonElement? pageNumber = null,
+        [Description("Page size between 1 and 50. Scalar or single-value array accepted.")] JsonElement? pageSize = null)
     {
+        var parsedRole = ParseOptionalEnum<OutfitRole>(role);
+        var parsedColor = ParseOptionalString(color);
+        var parsedPattern = ParseOptionalString(pattern);
+        var parsedMinWarmth = ParseOptionalInt(minWarmth);
+        var parsedMaxWarmth = ParseOptionalInt(maxWarmth);
+        var parsedWaterproof = ParseOptionalBool(waterproof);
+        var parsedFormality = ParseOptionalEnum<FormalityLevel>(formality);
+        var parsedPageNumber = ParseOptionalInt(pageNumber) ?? 1;
+        var parsedPageSize = ParseOptionalInt(pageSize) ?? 12;
+
         var request = new ClosetSearchRequest(
-            role is null ? null : [role.Value],
-            string.IsNullOrWhiteSpace(color) ? null : [color],
-            string.IsNullOrWhiteSpace(pattern) ? null : [pattern],
-            waterproof,
-            minWarmth,
-            maxWarmth,
-            formality,
-            pageNumber,
-            pageSize);
+            parsedRole is null ? null : [parsedRole.Value],
+            string.IsNullOrWhiteSpace(parsedColor) ? null : [parsedColor],
+            string.IsNullOrWhiteSpace(parsedPattern) ? null : [parsedPattern],
+            parsedWaterproof,
+            parsedMinWarmth,
+            parsedMaxWarmth,
+            parsedFormality,
+            parsedPageNumber,
+            parsedPageSize);
 
         var result = _closetService.Search(request);
         AddToolTrace("searchCloset", JsonSerializer.Serialize(request, JsonOptions), result.Items.Count, $"Returned {result.Items.Count} items out of {result.TotalCount}.");
@@ -281,35 +237,6 @@ public sealed class AgentLoopService : IAgentLoopService
         var item = _closetService.List().FirstOrDefault(x => x.Id == itemId);
         AddToolTrace("getClosetItemById", itemId, item is null ? 0 : 1, item is null ? "Not found" : $"Found {item.Name}");
         return item is null ? "null" : JsonSerializer.Serialize(item, JsonOptions);
-    }
-
-    [Description("Check whether two pattern families are compatible for top and bottom pairing.")]
-    public string CheckPatternCompatibilityTool(
-        [Description("Top pattern, for example solid, striped, floral")] string topPattern,
-        [Description("Bottom pattern, for example solid, plaid, floral")] string bottomPattern)
-    {
-        var top = Normalize(topPattern);
-        var bottom = Normalize(bottomPattern);
-        var isCompatible = top == "solid" || bottom == "solid" || top == bottom;
-        var summary = isCompatible ? "Pattern pairing is acceptable." : "Pattern pairing is risky.";
-        AddToolTrace("checkPatternCompatibility", $"{topPattern}/{bottomPattern}", 1, summary);
-        return summary;
-    }
-
-    [Description("Check whether two colors are harmonious for outfit pairing.")]
-    public string CheckColorCompatibilityTool(
-        [Description("Primary color from one garment")] string firstColor,
-        [Description("Primary color from another garment")] string secondColor)
-    {
-        var first = Normalize(firstColor);
-        var second = Normalize(secondColor);
-        var compatible = first == second
-            || NeutralColors.Contains(first) || NeutralColors.Contains(second)
-            || (first, second) is ("navy", "white") or ("white", "navy") or ("blue", "tan") or ("tan", "blue");
-
-        var summary = compatible ? "Color pairing is safe or neutral." : "Color pairing may clash.";
-        AddToolTrace("checkColorCompatibility", $"{firstColor}/{secondColor}", 1, summary);
-        return summary;
     }
 
     [Description("Evaluate weather-driven outfit requirements from the current forecast.")]
@@ -349,22 +276,6 @@ public sealed class AgentLoopService : IAgentLoopService
 
         AddToolTrace("validateOutfitCompleteness", $"top={topId};bottom={bottomId};shoes={shoesId};jacket={jacketId}", 1, summary);
         return summary;
-    }
-
-    [Description("Submit the final completed outfit. Call this ONCE after validateOutfitCompleteness returns COMPLETE.")]
-    public string SubmitOutfitTool(
-        [Description("Top item ID")] string topId,
-        [Description("Bottom item ID")] string bottomId,
-        [Description("Shoes item ID")] string shoesId,
-        [Description("Hat item ID (omit if no hat)")] string? hatId = null,
-        [Description("Jacket item ID (omit if no jacket)")] string? jacketId = null,
-        [Description("One-sentence rationale for this outfit")] string rationale = "",
-        [Description("True if a single garment covers both top and bottom")] bool usesHybridTopBottom = false)
-    {
-        if (ActiveCapture.Value is not null)
-            ActiveCapture.Value[0] = new OutfitCandidateProposal(topId, bottomId, shoesId, hatId, jacketId, usesHybridTopBottom, rationale);
-        AddToolTrace("submitOutfit", $"top={topId};bottom={bottomId};shoes={shoesId};hat={hatId};jacket={jacketId}", 1, $"Outfit submitted: {rationale}");
-        return "Outfit submitted successfully. Your work is done.";
     }
 
     private void AddToolTrace(string toolName, string arguments, int resultCount, string summary)
@@ -431,6 +342,103 @@ public sealed class AgentLoopService : IAgentLoopService
 
     private static string SummarizeForecast(DailyForecastDto forecast) =>
         string.Join(", ", forecast.Segments.Select(s => $"{s.Segment}: {s.TemperatureC}C, {s.Precipitation}, sunny={s.IsSunny}"));
+
+    private static bool? ParseOptionalBool(JsonElement? value)
+    {
+        var scalar = GetFirstScalarValue(value);
+        if (scalar is null)
+            return null;
+
+        if (scalar.Value.ValueKind is JsonValueKind.True or JsonValueKind.False)
+            return scalar.Value.GetBoolean();
+
+        if (scalar.Value.ValueKind == JsonValueKind.String)
+        {
+            var text = NormalizeToolScalar(scalar.Value.GetString());
+            if (bool.TryParse(text, out var result))
+                return result;
+        }
+
+        return null;
+    }
+
+    private static int? ParseOptionalInt(JsonElement? value)
+    {
+        var scalar = GetFirstScalarValue(value);
+        if (scalar is null)
+            return null;
+
+        if (scalar.Value.ValueKind == JsonValueKind.Number && scalar.Value.TryGetInt32(out var number))
+            return number;
+
+        if (scalar.Value.ValueKind == JsonValueKind.String)
+        {
+            var text = NormalizeToolScalar(scalar.Value.GetString());
+            if (int.TryParse(text, out var parsed))
+                return parsed;
+        }
+
+        return null;
+    }
+
+    private static TEnum? ParseOptionalEnum<TEnum>(JsonElement? value) where TEnum : struct, Enum
+    {
+        var scalar = GetFirstScalarValue(value);
+        if (scalar is null)
+            return null;
+
+        if (scalar.Value.ValueKind == JsonValueKind.String)
+        {
+            var text = NormalizeToolScalar(scalar.Value.GetString());
+            if (Enum.TryParse<TEnum>(text, ignoreCase: true, out var parsed) && Enum.IsDefined(parsed))
+                return parsed;
+        }
+
+        if (scalar.Value.ValueKind == JsonValueKind.Number && scalar.Value.TryGetInt32(out var numeric) && Enum.IsDefined(typeof(TEnum), numeric))
+            return (TEnum)Enum.ToObject(typeof(TEnum), numeric);
+
+        return null;
+    }
+
+    private static string? ParseOptionalString(JsonElement? value)
+    {
+        var scalar = GetFirstScalarValue(value);
+        if (scalar is null)
+            return null;
+
+        return scalar.Value.ValueKind switch
+        {
+            JsonValueKind.String => NormalizeToolScalar(scalar.Value.GetString()),
+            JsonValueKind.Number => scalar.Value.ToString(),
+            JsonValueKind.True => bool.TrueString.ToLowerInvariant(),
+            JsonValueKind.False => bool.FalseString.ToLowerInvariant(),
+            _ => null
+        };
+    }
+
+    private static JsonElement? GetFirstScalarValue(JsonElement? value)
+    {
+        if (value is null)
+            return null;
+
+        return value.Value.ValueKind switch
+        {
+            JsonValueKind.Undefined => null,
+            JsonValueKind.Null => null,
+            JsonValueKind.Array => value.Value.EnumerateArray().Select(item => GetFirstScalarValue(item)).FirstOrDefault(element => element is not null),
+            JsonValueKind.Object => null,
+            _ => value
+        };
+    }
+
+    private static string? NormalizeToolScalar(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return null;
+
+        var trimmed = value.Trim();
+        return string.Equals(trimmed, "null", StringComparison.OrdinalIgnoreCase) ? null : trimmed;
+    }
 
     private static string Normalize(string value) => value.Trim().ToLowerInvariant();
 
