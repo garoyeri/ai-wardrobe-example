@@ -28,9 +28,12 @@ public static class Extensions
 
         builder.Services.ConfigureHttpClientDefaults(http =>
         {
-            // Turn on resilience by default
+            // Keep resilience features, but disable retries to avoid duplicate calls and
+            // noisy frontend error behavior when the backend is already failing.
             http.AddStandardResilienceHandler(options =>
             {
+                options.Retry.MaxRetryAttempts = 0;
+
                 // Chat completions can take longer than the default resilience timeout.
                 options.TotalRequestTimeout.Timeout = TimeSpan.FromMinutes(3);
                 options.AttemptTimeout.Timeout = TimeSpan.FromMinutes(2);
