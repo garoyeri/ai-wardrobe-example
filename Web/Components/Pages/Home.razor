@@ -1,6 +1,7 @@
 ﻿@page "/"
 @rendermode InteractiveServer
 @inject WardrobeApiClient ApiClient
+@using Markdig
 
 <PageTitle>Home</PageTitle>
 
@@ -49,9 +50,18 @@
 								<span class="ms-2">@msg.Timestamp.ToString("HH:mm:ss")</span>
 							</small>
 						</div>
-						<div class="p-2 rounded @msg.CssClass">
-							@msg.Content
-						</div>
+						@if (msg.RendersMarkdown)
+						{
+							<div class="p-2 rounded markdown-content @msg.CssClass">
+								@((MarkupString)msg.ContentHtml)
+							</div>
+						}
+						else
+						{
+							<div class="p-2 rounded @msg.CssClass">
+								@msg.Content
+							</div>
+						}
 					</div>
 				}
 			}
@@ -246,6 +256,10 @@
 	private string? agentConversationId;
 	private string currentMessage = string.Empty;
 	private readonly List<ChatMessage> chatMessages = [];
+	private static readonly MarkdownPipeline MarkdownPipeline = new MarkdownPipelineBuilder()
+		.UseAdvancedExtensions()
+		.DisableHtml()
+		.Build();
 	private readonly ClosetItemFormModel itemForm = new();
 	private IReadOnlyList<ClosetItemDto> closetItems = [];
 	private string? editingId;
@@ -530,6 +544,7 @@
 			Kind = kind,
 			Author = author ?? ResolveAuthor(kind),
 			Content = content,
+			ContentHtml = kind is ChatMessageKind.User ? string.Empty : Markdown.ToHtml(content, MarkdownPipeline),
 			Timestamp = DateTime.Now
 		});
 	}
@@ -553,7 +568,9 @@
 		public ChatMessageKind Kind { get; set; }
 		public string Author { get; set; } = string.Empty;
 		public string Content { get; set; } = string.Empty;
+		public string ContentHtml { get; set; } = string.Empty;
 		public DateTime Timestamp { get; set; }
+		public bool RendersMarkdown => Kind is not ChatMessageKind.User;
 		public string CssClass => Kind switch
 		{
 			ChatMessageKind.User => "bg-primary text-white",
