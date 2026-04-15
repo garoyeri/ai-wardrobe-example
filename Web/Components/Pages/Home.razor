@@ -517,11 +517,26 @@
 			case AgentLoopEventType.Status:
 				AddChatMessage(ChatMessageKind.Workflow, streamEvent.Message, "Workflow");
 				break;
+			case AgentLoopEventType.Lifecycle:
+				AddChatMessage(ChatMessageKind.Workflow, streamEvent.Message, "Workflow");
+				break;
 			case AgentLoopEventType.Handoff:
-				AddChatMessage(ChatMessageKind.Workflow, $"Handoff to {streamEvent.Agent}: {streamEvent.Message}", "Workflow");
+				AddChatMessage(ChatMessageKind.Workflow, $"Handoff to {streamEvent.Agent ?? streamEvent.Executor}: {streamEvent.Message}", "Workflow");
+				break;
+			case AgentLoopEventType.AgentDelta:
+				AddChatMessage(ChatMessageKind.Workflow, $"{ResolveAgentAuthor(streamEvent.Agent)} streaming: {streamEvent.Message}", "Workflow");
 				break;
 			case AgentLoopEventType.Tool:
-				AddChatMessage(ChatMessageKind.Workflow, $"{streamEvent.Agent} used {streamEvent.Tool}: {streamEvent.Message}", "Workflow");
+				AddChatMessage(ChatMessageKind.Workflow, $"{streamEvent.Agent ?? streamEvent.Executor} used {streamEvent.Tool}: {streamEvent.Message}", "Workflow");
+				break;
+			case AgentLoopEventType.Validation:
+				AddChatMessage(ChatMessageKind.Workflow, $"Validation: {streamEvent.Message}", "Workflow");
+				break;
+			case AgentLoopEventType.Summary:
+				AddChatMessage(ChatMessageKind.Workflow, streamEvent.Message, "Context");
+				break;
+			case AgentLoopEventType.Debug:
+				AddChatMessage(ChatMessageKind.Workflow, $"Debug: {streamEvent.Message}", "Workflow");
 				break;
 			case AgentLoopEventType.AgentMessage:
 				AddChatMessage(ChatMessageKind.Agent, streamEvent.Message, ResolveAgentAuthor(streamEvent.Agent));
@@ -559,7 +574,9 @@
 	private static string ResolveAgentAuthor(string? agent) => agent switch
 	{
 		"weather-agent" => "🌤 Weather Agent",
+		"WeatherExecutor" => "🌤 Weather Agent",
 		"stylist-agent" => "👗 Stylist Agent",
+		"StylistExecutor" => "👗 Stylist Agent",
 		_ => "🤖 Agent"
 	};
 

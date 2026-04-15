@@ -53,9 +53,14 @@ public sealed record AgentLoopResponse(
 public static class AgentLoopEventType
 {
     public const string Status = "status";
+    public const string Lifecycle = "lifecycle";
     public const string Handoff = "handoff";
-    public const string Tool = "tool";
     public const string AgentMessage = "agent-message";
+    public const string AgentDelta = "agent-delta";
+    public const string Validation = "validation";
+    public const string Tool = "tool";
+    public const string Summary = "summary";
+    public const string Debug = "debug";
     public const string Complete = "complete";
     public const string Error = "error";
 }
@@ -66,7 +71,11 @@ public sealed record AgentLoopStreamEvent(
     string EventType,
     string Message,
     string? Agent = null,
+    string? Executor = null,
     string? Tool = null,
+    string? Stage = null,
+    int? Attempt = null,
+    object? Data = null,
     AgentToolCallTrace? ToolCall = null,
     AgentHandoffTrace? Handoff = null,
     AgentLoopResponse? Response = null);
