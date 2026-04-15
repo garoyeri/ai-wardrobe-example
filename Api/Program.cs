@@ -22,6 +22,7 @@ var ollamaEndpoint = TryGetEndpointFromConnectionString(ollamaConnectionString)
 var ollamaModel = builder.Configuration["Ollama:Model"] ?? "llama3.2:1b";
 
 builder.Services.AddChatClient(new OllamaApiClient(new Uri(ollamaEndpoint), ollamaModel))
+    .UseFunctionInvocation()
     .UseOpenTelemetry(sourceName: "OllamaApiClient", configure: c => { c.EnableSensitiveData = true; });
 builder.Services.AddSingleton<IClosetService, ClosetService>();
 builder.Services.AddSingleton<IWeatherService, WeatherService>();
@@ -60,12 +61,12 @@ closet.MapPost("/items", (IClosetService service, UpsertClosetItemRequest reques
 
     return Results.Ok(service.Add(request));
 });
-closet.MapPut("/items/{id:guid}", (IClosetService service, Guid id, UpsertClosetItemRequest request) =>
+closet.MapPut("/items/{id}", (IClosetService service, string id, UpsertClosetItemRequest request) =>
 {
     var updated = service.Update(id, request);
     return updated is null ? Results.NotFound() : Results.Ok(updated);
 });
-closet.MapDelete("/items/{id:guid}", (IClosetService service, Guid id) =>
+closet.MapDelete("/items/{id}", (IClosetService service, string id) =>
     service.Delete(id) ? Results.NoContent() : Results.NotFound());
 closet.MapPost("/reset", (IClosetService service) =>
 {
