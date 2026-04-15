@@ -28,8 +28,7 @@ public sealed record OutfitCandidateProposal(
     string? ShoesId,
     string? HatId,
     string? JacketId,
-    bool UsesHybridTopBottom,
-    string Rationale);
+    string CompletenessNotes);
 
 public sealed record AgentToolCallTrace(
     string Agent,

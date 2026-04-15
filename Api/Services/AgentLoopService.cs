@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Microsoft.Agents.AI;
 using Microsoft.Agents.AI.Workflows;
 using Microsoft.Extensions.AI;
@@ -60,17 +61,11 @@ public sealed class AgentLoopService : IAgentLoopService
             instructions: """
                 /no_think You are a wardrobe stylist.
                 Use the closet tools to identify specific outfit items.
-                Always reply as strict JSON with this shape and no markdown:
-                {
-                  "topId": "string|null",
-                  "bottomId": "string|null",
-                  "shoesId": "string|null",
-                  "hatId": "string|null",
-                  "jacketId": "string|null",
-                  "usesHybridTopBottom": false,
-                  "rationale": "short explanation"
-                }
-                Ensure the JSON contains the identifiers for any "Id" fields, this is important for handoff.
+                Return ONLY a comma-separated list of closet item IDs and nothing else.
+                Required: top, bottom, shoes.
+                Include jacket when rain is likely or minimum temperature is 10C or below.
+                Hat is optional.
+                Example output: tops0001,bttm0003,shoe0004,jckt0002,hats0001
                 """,
             name: "stylist-agent",
             tools:
@@ -558,7 +553,7 @@ internal sealed record StylistDraft(
     string WeatherAdvice,
     int Attempt,
     string? PreviousFeedback,
-    OutfitCandidateProposal Proposal,
+    IReadOnlyList<string> CandidateIds,
     string RawResponse,
     IReadOnlyList<AgentToolCallTrace> ToolCalls);
 
@@ -646,6 +641,8 @@ internal sealed class WeatherExecutor(ChatClientAgent weatherAgent) : Executor<O
 
 internal static class StylistExecutorSupport
 {
+    private static readonly Regex IdPattern = new(@"\b[a-z]{4}\d{4}\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
     public static async Task<StylistDraft> RunStylistAttemptAsync(
         ChatClientAgent stylistAgent,
         IClosetService closetService,
@@ -691,15 +688,23 @@ internal static class StylistExecutorSupport
             Max closet page size hint: {input.PageSize}
             {retryInstruction}
 
+            Completion rules:
+            - Return ONLY a comma-separated list of closet item IDs.
+            - Required IDs: one top, one bottom, one shoes.
+            - Include a jacket ID when rain is likely or minimum temperature is 10C or below.
+            - Hat ID is optional.
+            - Do not return JSON, markdown, prose, or explanations.
+            - If validation says some IDs are already valid, keep them and only replace missing/invalid slots.
+
             Closet inventory JSON:
             {closetJson}
 
-            Return STRICT JSON only for one candidate outfit.
+            Return only IDs like: tops0001,bttm0003,shoe0004,jckt0002,hats0001
             """;
 
         var response = await stylistAgent.RunAsync(prompt, cancellationToken: cancellationToken);
         var raw = response.ToString();
-        var proposal = ParseProposal(raw);
+        var candidateIds = ParseCandidateIds(raw);
 
         await context.AddEventAsync(new WorkflowDebugEvent(
             AgentLoopEventType.AgentMessage,
@@ -708,26 +713,35 @@ internal static class StylistExecutorSupport
             executor: executorName,
             stage: "stylist",
             attempt: attempt,
-            data: proposal));
+            data: new { candidateIds }));
 
-        return new StylistDraft(input, weatherAdvice, attempt, previousFeedback, proposal, raw, toolCalls);
+        return new StylistDraft(input, weatherAdvice, attempt, previousFeedback, candidateIds, raw, toolCalls);
     }
 
-    private static OutfitCandidateProposal ParseProposal(string raw)
+    private static IReadOnlyList<string> ParseCandidateIds(string raw)
     {
-        try
+        if (string.IsNullOrWhiteSpace(raw))
         {
-            var parsed = JsonSerializer.Deserialize<OutfitCandidateProposal>(raw, new JsonSerializerOptions(JsonSerializerDefaults.Web)
-            {
-                PropertyNameCaseInsensitive = true
-            });
+            return [];
+        }
 
-            return parsed ?? new OutfitCandidateProposal(null, null, null, null, null, false, "No rationale provided.");
-        }
-        catch
+        var matches = IdPattern.Matches(raw)
+            .Select(match => match.Value.Trim().ToLowerInvariant())
+            .Where(id => id.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        if (matches.Length > 0)
         {
-            return new OutfitCandidateProposal(null, null, null, null, null, false, "Agent returned non-JSON output.");
+            return matches;
         }
+
+        return raw
+            .Split([',', '\n', '\r', ';', ' '], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(token => token.Trim('"', '\'', '[', ']', '{', '}', '(', ')').ToLowerInvariant())
+            .Where(token => token.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
     }
 }
 
@@ -787,19 +801,41 @@ internal sealed class ValidateOutfitExecutor(IClosetService closetService, IWeat
         var hasRain = forecast.Segments.Any(s => s.Precipitation is PrecipitationKind.Rain or PrecipitationKind.Drizzle or PrecipitationKind.Snow);
         var minTemp = forecast.Segments.Min(s => s.TemperatureC);
         var jacketRequired = hasRain || minTemp <= 10;
+        var providedIds = draft.CandidateIds
+            .Where(id => byId.ContainsKey(id))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        var top = ResolveByRole(byId, providedIds, OutfitRole.Top);
+        var bottom = ResolveByRole(byId, providedIds, OutfitRole.Bottom);
+        var shoes = ResolveByRole(byId, providedIds, OutfitRole.Shoes);
+        var jacket = ResolveByRole(byId, providedIds, OutfitRole.Jacket);
+        var hat = ResolveByRole(byId, providedIds, OutfitRole.Hat);
 
         var missing = new List<string>();
 
-        if (!HasRole(byId, draft.Proposal.TopId, OutfitRole.Top)) missing.Add("top");
-        if (!HasRole(byId, draft.Proposal.BottomId, OutfitRole.Bottom)) missing.Add("bottom");
-        if (!HasRole(byId, draft.Proposal.ShoesId, OutfitRole.Shoes)) missing.Add("shoes");
-        if (jacketRequired && !HasRole(byId, draft.Proposal.JacketId, OutfitRole.Jacket)) missing.Add($"jacket (required: rain={hasRain}, minTemp={minTemp}C)");
+        if (top is null) missing.Add("top");
+        if (bottom is null) missing.Add("bottom");
+        if (shoes is null) missing.Add("shoes");
+        if (jacketRequired && jacket is null) missing.Add($"jacket (required: rain={hasRain}, minTemp={minTemp}C)");
+
+        var completenessNotes = missing.Count == 0
+            ? "All required outfit slots were resolved from stylist-provided IDs."
+            : $"Missing required slots: {string.Join(", ", missing)}.";
+
+        var normalizedProposal = new OutfitCandidateProposal(
+            TopId: top?.Id,
+            BottomId: bottom?.Id,
+            ShoesId: shoes?.Id,
+            HatId: hat?.Id,
+            JacketId: jacket?.Id,
+            CompletenessNotes: completenessNotes);
 
         var valid = missing.Count == 0;
         var needsRetry = !valid && draft.Attempt < draft.Input.MaxAttempts;
         var feedback = valid
-            ? "COMPLETE"
-            : $"INCOMPLETE: missing or invalid slots - {string.Join(", ", missing)}";
+            ? $"COMPLETE: candidate resolved from IDs [{string.Join(",", providedIds)}]. top={DescribeSelection(byId, normalizedProposal.TopId)}, bottom={DescribeSelection(byId, normalizedProposal.BottomId)}, shoes={DescribeSelection(byId, normalizedProposal.ShoesId)}, jacket={(jacketRequired ? DescribeSelection(byId, normalizedProposal.JacketId) : "optional")}, hat={DescribeSelection(byId, normalizedProposal.HatId)}"
+            : $"INCOMPLETE: missing or invalid slots - {string.Join(", ", missing)}. Provided IDs=[{string.Join(",", providedIds)}]. Current candidate: top={DescribeSelection(byId, normalizedProposal.TopId)}, bottom={DescribeSelection(byId, normalizedProposal.BottomId)}, shoes={DescribeSelection(byId, normalizedProposal.ShoesId)}, jacket={DescribeSelection(byId, normalizedProposal.JacketId)}, hat={DescribeSelection(byId, normalizedProposal.HatId)}";
 
         await context.AddEventAsync(new WorkflowDebugEvent(
             AgentLoopEventType.Validation,
@@ -808,7 +844,7 @@ internal sealed class ValidateOutfitExecutor(IClosetService closetService, IWeat
             executor: "ValidateOutfitExecutor",
             stage: "validation",
             attempt: draft.Attempt,
-            data: new { valid, needsRetry, missing }));
+            data: new { valid, needsRetry, missing, normalizedProposal }));
 
         return new ValidationResult(
             draft.Input,
@@ -817,19 +853,37 @@ internal sealed class ValidateOutfitExecutor(IClosetService closetService, IWeat
             valid,
             needsRetry,
             feedback,
-            draft.Proposal,
+            normalizedProposal,
             draft.RawResponse,
             draft.ToolCalls);
     }
 
-    private static bool HasRole(Dictionary<string, ClosetItemDto> byId, string? id, OutfitRole role)
+    private static ClosetItemDto? ResolveByRole(
+        Dictionary<string, ClosetItemDto> byId,
+        IReadOnlyList<string> ids,
+        OutfitRole role)
     {
-        if (string.IsNullOrWhiteSpace(id) || !byId.TryGetValue(id, out var item))
+        foreach (var id in ids)
         {
-            return false;
+            if (byId.TryGetValue(id, out var item) && item.Roles.Contains(role))
+            {
+                return item;
+            }
         }
 
-        return item.Roles.Contains(role);
+        return null;
+    }
+
+    private static string DescribeSelection(Dictionary<string, ClosetItemDto> byId, string? id)
+    {
+        if (string.IsNullOrWhiteSpace(id))
+        {
+            return "null";
+        }
+
+        return byId.TryGetValue(id, out var item)
+            ? $"{item.Name} ({item.Id})"
+            : id;
     }
 }
 
@@ -873,7 +927,7 @@ internal sealed class OutputExecutor() : Executor<ValidationResult, OutfitWorkfl
             - Jacket: {proposal.JacketId ?? "(not required)"}
             - Hat: {proposal.HatId ?? "(optional, not selected)"}
 
-            Why this works: {proposal.Rationale}
+            Completion notes: {proposal.CompletenessNotes}
             """;
     }
 
@@ -886,4 +940,5 @@ internal sealed class OutputExecutor() : Executor<ValidationResult, OutfitWorkfl
             {result.RawStylistResponse}
             """;
     }
+
 }
