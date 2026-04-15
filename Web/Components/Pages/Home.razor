@@ -49,32 +49,9 @@
 								<span class="ms-2">@msg.Timestamp.ToString("HH:mm:ss")</span>
 							</small>
 						</div>
-						@if (msg.IsAgent && msg.OutfitRecommendation is not null)
-						{
-							<div class="card bg-info-subtle border-info-subtle">
-								<div class="card-body">
-									<p><strong>Top:</strong> @DisplayItem(msg.OutfitRecommendation.Selection.Top)</p>
-									<p><strong>Bottom:</strong> @DisplayItem(msg.OutfitRecommendation.Selection.Bottom)</p>
-									<p><strong>Shoes:</strong> @DisplayItem(msg.OutfitRecommendation.Selection.Shoes)</p>
-									@if (msg.OutfitRecommendation.Selection.Hat is not null)
-									{
-										<p><strong>Hat:</strong> @msg.OutfitRecommendation.Selection.Hat.Name</p>
-									}
-									@if (msg.OutfitRecommendation.Selection.Jacket is not null)
-									{
-										<p><strong>Jacket:</strong> @msg.OutfitRecommendation.Selection.Jacket.Name</p>
-									}
-									<hr />
-									<p class="mb-0"><small><em>@msg.OutfitRecommendation.AgentExplanation</em></small></p>
-								</div>
-							</div>
-						}
-						else
-						{
-							<div class="p-2 rounded @(msg.IsAgent ? "bg-light" : "bg-primary text-white")">
-								@msg.Content
-							</div>
-						}
+						<div class="p-2 rounded @(msg.IsAgent ? "bg-light" : "bg-primary text-white")">
+							@msg.Content
+						</div>
 					</div>
 				}
 			}
