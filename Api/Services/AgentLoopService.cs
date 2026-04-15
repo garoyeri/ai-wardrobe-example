@@ -14,6 +14,8 @@ public interface IAgentLoopService
 
 public sealed class AgentLoopService : IAgentLoopService
 {
+    private static int ConversationCounter;
+
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         WriteIndented = false
@@ -124,7 +126,7 @@ public sealed class AgentLoopService : IAgentLoopService
     public async Task<AgentLoopResponse> RunAsync(AgentLoopRequest request, CancellationToken cancellationToken = default)
     {
         var key = string.IsNullOrWhiteSpace(request.ConversationId)
-            ? Guid.NewGuid().ToString("n")
+            ? NextAvailableConversationId()
             : request.ConversationId.Trim();
 
         _logger.LogInformation("Starting AgentLoop - ConversationId: {ConversationId} | Prompt: {Prompt}", key, request.Prompt);
@@ -211,11 +213,11 @@ public sealed class AgentLoopService : IAgentLoopService
         // Create a deterministic recommendation from the candidate for display purposes
         var closet = _closetService.List();
         var byId = closet.ToDictionary(item => item.Id);
-        var top = candidate.TopId.HasValue && byId.TryGetValue(candidate.TopId.Value, out var t) ? t : null;
-        var bottom = candidate.BottomId.HasValue && byId.TryGetValue(candidate.BottomId.Value, out var b) ? b : null;
-        var shoes = candidate.ShoesId.HasValue && byId.TryGetValue(candidate.ShoesId.Value, out var s) ? s : null;
-        var hat = candidate.HatId.HasValue && byId.TryGetValue(candidate.HatId.Value, out var h) ? h : null;
-        var jacket = candidate.JacketId.HasValue && byId.TryGetValue(candidate.JacketId.Value, out var j) ? j : null;
+        var top = !string.IsNullOrWhiteSpace(candidate.TopId) && byId.TryGetValue(candidate.TopId, out var t) ? t : null;
+        var bottom = !string.IsNullOrWhiteSpace(candidate.BottomId) && byId.TryGetValue(candidate.BottomId, out var b) ? b : null;
+        var shoes = !string.IsNullOrWhiteSpace(candidate.ShoesId) && byId.TryGetValue(candidate.ShoesId, out var s) ? s : null;
+        var hat = !string.IsNullOrWhiteSpace(candidate.HatId) && byId.TryGetValue(candidate.HatId, out var h) ? h : null;
+        var jacket = !string.IsNullOrWhiteSpace(candidate.JacketId) && byId.TryGetValue(candidate.JacketId, out var j) ? j : null;
 
         var selection = new OutfitSelectionDto(top, bottom, shoes, hat, jacket, candidate.UsesHybridTopBottom);
         var recommendation = new OutfitRecommendationDto(
@@ -274,10 +276,10 @@ public sealed class AgentLoopService : IAgentLoopService
     }
 
     [Description("Get a single closet item by ID.")]
-    public string GetClosetItemByIdTool([Description("Closet item ID")] Guid itemId)
+    public string GetClosetItemByIdTool([Description("Closet item ID")] string itemId)
     {
         var item = _closetService.List().FirstOrDefault(x => x.Id == itemId);
-        AddToolTrace("getClosetItemById", itemId.ToString(), item is null ? 0 : 1, item is null ? "Not found" : $"Found {item.Name}");
+        AddToolTrace("getClosetItemById", itemId, item is null ? 0 : 1, item is null ? "Not found" : $"Found {item.Name}");
         return item is null ? "null" : JsonSerializer.Serialize(item, JsonOptions);
     }
 
@@ -325,10 +327,10 @@ public sealed class AgentLoopService : IAgentLoopService
 
     [Description("Validate candidate outfit completeness. Returns COMPLETE or lists the missing required slots so the agent knows what to search for next.")]
     public string ValidateOutfitCompletenessTool(
-        [Description("Candidate top item id")] Guid? topId,
-        [Description("Candidate bottom item id")] Guid? bottomId,
-        [Description("Candidate shoes item id")] Guid? shoesId,
-        [Description("Candidate jacket item id (required when rain or cold is expected)")] Guid? jacketId = null)
+        [Description("Candidate top item id")] string? topId,
+        [Description("Candidate bottom item id")] string? bottomId,
+        [Description("Candidate shoes item id")] string? shoesId,
+        [Description("Candidate jacket item id (required when rain or cold is expected)")] string? jacketId = null)
     {
         var forecast = _weatherService.Get();
         var hasRain = forecast.Segments.Any(s => s.Precipitation is PrecipitationKind.Rain or PrecipitationKind.Drizzle or PrecipitationKind.Snow);
@@ -336,10 +338,10 @@ public sealed class AgentLoopService : IAgentLoopService
         var needsJacket = hasRain || minTemp <= 10;
 
         var missing = new List<string>();
-        if (!topId.HasValue) missing.Add("top");
-        if (!bottomId.HasValue) missing.Add("bottom");
-        if (!shoesId.HasValue) missing.Add("shoes");
-        if (needsJacket && !jacketId.HasValue) missing.Add($"jacket (required: rain={hasRain}, minTemp={minTemp}C)");
+        if (string.IsNullOrWhiteSpace(topId)) missing.Add("top");
+        if (string.IsNullOrWhiteSpace(bottomId)) missing.Add("bottom");
+        if (string.IsNullOrWhiteSpace(shoesId)) missing.Add("shoes");
+        if (needsJacket && string.IsNullOrWhiteSpace(jacketId)) missing.Add($"jacket (required: rain={hasRain}, minTemp={minTemp}C)");
 
         var summary = missing.Count == 0
             ? "COMPLETE: all required slots are filled."
@@ -351,11 +353,11 @@ public sealed class AgentLoopService : IAgentLoopService
 
     [Description("Submit the final completed outfit. Call this ONCE after validateOutfitCompleteness returns COMPLETE.")]
     public string SubmitOutfitTool(
-        [Description("Top item ID")] Guid topId,
-        [Description("Bottom item ID")] Guid bottomId,
-        [Description("Shoes item ID")] Guid shoesId,
-        [Description("Hat item ID (omit if no hat)")] Guid? hatId = null,
-        [Description("Jacket item ID (omit if no jacket)")] Guid? jacketId = null,
+        [Description("Top item ID")] string topId,
+        [Description("Bottom item ID")] string bottomId,
+        [Description("Shoes item ID")] string shoesId,
+        [Description("Hat item ID (omit if no hat)")] string? hatId = null,
+        [Description("Jacket item ID (omit if no jacket)")] string? jacketId = null,
         [Description("One-sentence rationale for this outfit")] string rationale = "",
         [Description("True if a single garment covers both top and bottom")] bool usesHybridTopBottom = false)
     {
@@ -431,6 +433,24 @@ public sealed class AgentLoopService : IAgentLoopService
         string.Join(", ", forecast.Segments.Select(s => $"{s.Segment}: {s.TemperatureC}C, {s.Precipitation}, sunny={s.IsSunny}"));
 
     private static string Normalize(string value) => value.Trim().ToLowerInvariant();
+
+    private string NextAvailableConversationId()
+    {
+        for (var attempts = 0; attempts < 10000; attempts++)
+        {
+            var candidate = NextConversationId();
+            if (!_sessions.ContainsKey(candidate))
+                return candidate;
+        }
+
+        throw new InvalidOperationException("No available conversation IDs remaining for conv#### format.");
+    }
+
+    private static string NextConversationId()
+    {
+        var value = Interlocked.Increment(ref ConversationCounter) % 10000;
+        return $"conv{value:0000}";
+    }
 
     private static string? ExtractConversationId(AgentSession session)
     {

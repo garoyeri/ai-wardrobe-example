@@ -24,11 +24,11 @@ public sealed record AgentLoopRequest(
     int PageSize = 12);
 
 public sealed record OutfitCandidateProposal(
-    Guid? TopId,
-    Guid? BottomId,
-    Guid? ShoesId,
-    Guid? HatId,
-    Guid? JacketId,
+    string? TopId,
+    string? BottomId,
+    string? ShoesId,
+    string? HatId,
+    string? JacketId,
     bool UsesHybridTopBottom,
     string Rationale);
 

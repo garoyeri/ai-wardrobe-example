@@ -179,8 +179,8 @@
 			</div>
 
 			<div class="mt-3 d-flex gap-2">
-				<button class="btn btn-primary" disabled="@isBusy">@(editingId.HasValue ? "Update Item" : "Add Item")</button>
-				@if (editingId.HasValue)
+				<button class="btn btn-primary" disabled="@isBusy">@(!string.IsNullOrWhiteSpace(editingId) ? "Update Item" : "Add Item")</button>
+				@if (!string.IsNullOrWhiteSpace(editingId))
 				{
 					<button class="btn btn-outline-secondary" type="button" @onclick="ClearItemForm">Cancel Edit</button>
 				}
@@ -271,7 +271,7 @@
 	private readonly List<ChatMessage> chatMessages = [];
 	private readonly ClosetItemFormModel itemForm = new();
 	private IReadOnlyList<ClosetItemDto> closetItems = [];
-	private Guid? editingId;
+	private string? editingId;
 	private DateOnly forecastDate = DateOnly.FromDateTime(DateTime.Today);
 	private List<SegmentFormModel> segmentForms = [
 		new(DaySegment.Morning),
@@ -385,9 +385,9 @@
 				itemForm.Warmth,
 				itemForm.Formality);
 
-			if (editingId.HasValue)
+			if (!string.IsNullOrWhiteSpace(editingId))
 			{
-				await ApiClient.UpdateClosetItemAsync(editingId.Value, request);
+				await ApiClient.UpdateClosetItemAsync(editingId, request);
 			}
 			else
 			{
@@ -413,7 +413,7 @@
 		itemForm.Formality = item.Formality;
 	}
 
-	private async Task DeleteItemAsync(Guid id)
+	private async Task DeleteItemAsync(string id)
 	{
 		await ExecuteAsync(async () =>
 		{
@@ -528,14 +528,14 @@
 			.Distinct()
 			.ToList();
 
-	private string ResolveCandidateItemName(Guid? itemId)
+	private string ResolveCandidateItemName(string? itemId)
 	{
-		if (!itemId.HasValue)
+		if (string.IsNullOrWhiteSpace(itemId))
 		{
 			return "(not selected)";
 		}
 
-		var item = closetItems.FirstOrDefault(x => x.Id == itemId.Value);
+		var item = closetItems.FirstOrDefault(x => x.Id == itemId);
 		return item is null ? $"Unknown item ({itemId})" : item.Name;
 	}
 

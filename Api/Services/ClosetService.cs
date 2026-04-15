@@ -7,14 +7,23 @@ public interface IClosetService
     IReadOnlyList<ClosetItemDto> List();
     ClosetSearchResultDto Search(ClosetSearchRequest request);
     ClosetItemDto Add(UpsertClosetItemRequest request);
-    ClosetItemDto? Update(Guid id, UpsertClosetItemRequest request);
-    bool Delete(Guid id);
+    ClosetItemDto? Update(string id, UpsertClosetItemRequest request);
+    bool Delete(string id);
     void Reset();
 }
 
 public sealed class ClosetService : IClosetService
 {
     private const int MaxPageSize = 50;
+    private static readonly IReadOnlyDictionary<OutfitRole, string> RolePrefixes = new Dictionary<OutfitRole, string>
+    {
+        [OutfitRole.Top] = "tops",
+        [OutfitRole.Bottom] = "bttm",
+        [OutfitRole.Shoes] = "shoe",
+        [OutfitRole.Hat] = "hats",
+        [OutfitRole.Jacket] = "jckt"
+    };
+
     private readonly List<ClosetItemDto> _items = Seed();
 
     public IReadOnlyList<ClosetItemDto> List() => _items.OrderBy(x => x.Name).ToArray();
@@ -76,25 +85,30 @@ public sealed class ClosetService : IClosetService
 
     public ClosetItemDto Add(UpsertClosetItemRequest request)
     {
-        var item = ToItem(Guid.NewGuid(), request);
+        var item = ToItem(NextIdForRoles(request.Roles), request);
         _items.Add(item);
         return item;
     }
 
-    public ClosetItemDto? Update(Guid id, UpsertClosetItemRequest request)
+    public ClosetItemDto? Update(string id, UpsertClosetItemRequest request)
     {
-        var index = _items.FindIndex(x => x.Id == id);
+        var normalizedId = NormalizeId(id);
+        var index = _items.FindIndex(x => x.Id == normalizedId);
         if (index < 0)
         {
             return null;
         }
 
-        var updated = ToItem(id, request);
+        var updated = ToItem(normalizedId, request);
         _items[index] = updated;
         return updated;
     }
 
-    public bool Delete(Guid id) => _items.RemoveAll(x => x.Id == id) > 0;
+    public bool Delete(string id)
+    {
+        var normalizedId = NormalizeId(id);
+        return _items.RemoveAll(x => x.Id == normalizedId) > 0;
+    }
 
     public void Reset()
     {
@@ -102,9 +116,9 @@ public sealed class ClosetService : IClosetService
         _items.AddRange(Seed());
     }
 
-    private static ClosetItemDto ToItem(Guid id, UpsertClosetItemRequest request) =>
+    private ClosetItemDto ToItem(string id, UpsertClosetItemRequest request) =>
         new(
-            id,
+            NormalizeId(id),
             request.Name.Trim(),
             request.Roles,
             request.Colors,
@@ -116,6 +130,43 @@ public sealed class ClosetService : IClosetService
             request.Formality);
 
     private static string NormalizeTag(string value) => value.Trim().ToLowerInvariant();
+
+    private static string NormalizeId(string value) => value.Trim().ToLowerInvariant();
+
+    private string NextIdForRoles(IReadOnlyList<OutfitRole> roles)
+    {
+        var prefix = GetPrefix(roles);
+        var max = _items
+            .Select(item => TryExtractSequence(item.Id, prefix))
+            .Where(sequence => sequence.HasValue)
+            .Select(sequence => sequence!.Value)
+            .DefaultIfEmpty(0)
+            .Max();
+
+        if (max >= 9999)
+            throw new InvalidOperationException($"Cannot generate more IDs for prefix '{prefix}'.");
+
+        return $"{prefix}{max + 1:0000}";
+    }
+
+    private static string GetPrefix(IReadOnlyList<OutfitRole> roles)
+    {
+        var primary = roles.FirstOrDefault();
+        return RolePrefixes.TryGetValue(primary, out var prefix) ? prefix : "item";
+    }
+
+    private static int? TryExtractSequence(string id, string prefix)
+    {
+        if (!id.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) || id.Length != 8)
+            return null;
+
+        if (int.TryParse(id[4..], out var sequence))
+            return sequence;
+
+        return null;
+    }
+
+    private static string CreateSeedId(string prefix, int number) => $"{prefix}{number:0000}";
 
     private static List<ClosetItemDto> Seed()
     {
@@ -145,7 +196,7 @@ public sealed class ClosetService : IClosetService
         for (int i = 0; i < 50; i++)
         {
             items.Add(new ClosetItemDto(
-                Guid.NewGuid(),
+                CreateSeedId(RolePrefixes[OutfitRole.Top], i + 1),
                 topNames[i],
                 [OutfitRole.Top],
                 [colors[rand.Next(colors.Length)]],
@@ -169,7 +220,7 @@ public sealed class ClosetService : IClosetService
         for (int i = 0; i < 25; i++)
         {
             items.Add(new ClosetItemDto(
-                Guid.NewGuid(),
+                CreateSeedId(RolePrefixes[OutfitRole.Bottom], i + 1),
                 bottomNames[i],
                 [OutfitRole.Bottom],
                 [colors[rand.Next(colors.Length)]],
@@ -191,7 +242,7 @@ public sealed class ClosetService : IClosetService
         for (int i = 0; i < 15; i++)
         {
             items.Add(new ClosetItemDto(
-                Guid.NewGuid(),
+                CreateSeedId(RolePrefixes[OutfitRole.Jacket], i + 1),
                 jacketNames[i],
                 [OutfitRole.Jacket],
                 [colors[rand.Next(colors.Length)]],
@@ -211,7 +262,7 @@ public sealed class ClosetService : IClosetService
         for (int i = 0; i < 5; i++)
         {
             items.Add(new ClosetItemDto(
-                Guid.NewGuid(),
+                CreateSeedId(RolePrefixes[OutfitRole.Hat], i + 1),
                 hatNames[i],
                 [OutfitRole.Hat],
                 [colors[rand.Next(colors.Length)]],
@@ -231,7 +282,7 @@ public sealed class ClosetService : IClosetService
         for (int i = 0; i < 5; i++)
         {
             items.Add(new ClosetItemDto(
-                Guid.NewGuid(),
+                CreateSeedId(RolePrefixes[OutfitRole.Shoes], i + 1),
                 shoeNames[i],
                 [OutfitRole.Shoes],
                 [colors[rand.Next(colors.Length)]],

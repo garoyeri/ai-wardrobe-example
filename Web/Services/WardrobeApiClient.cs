@@ -23,14 +23,14 @@ public sealed class WardrobeApiClient(HttpClient httpClient)
         return await response.Content.ReadFromJsonAsync<ClosetItemDto>(cancellationToken);
     }
 
-    public async Task<ClosetItemDto?> UpdateClosetItemAsync(Guid id, UpsertClosetItemRequest request, CancellationToken cancellationToken = default)
+    public async Task<ClosetItemDto?> UpdateClosetItemAsync(string id, UpsertClosetItemRequest request, CancellationToken cancellationToken = default)
     {
         var response = await httpClient.PutAsJsonAsync($"/api/closet/items/{id}", request, cancellationToken);
         response.EnsureSuccessStatusCode();
         return await response.Content.ReadFromJsonAsync<ClosetItemDto>(cancellationToken);
     }
 
-    public async Task DeleteClosetItemAsync(Guid id, CancellationToken cancellationToken = default)
+    public async Task DeleteClosetItemAsync(string id, CancellationToken cancellationToken = default)
     {
         var response = await httpClient.DeleteAsync($"/api/closet/items/{id}", cancellationToken);
         response.EnsureSuccessStatusCode();

@@ -24,7 +24,7 @@ public enum FormalityLevel
 }
 
 public sealed record ClosetItemDto(
-    Guid Id,
+    string Id,
     string Name,
     IReadOnlyList<OutfitRole> Roles,
     IReadOnlyList<string> Colors,
