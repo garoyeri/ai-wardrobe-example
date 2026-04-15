@@ -23,8 +23,13 @@ var ollamaConnectionString = builder.Configuration.GetConnectionString("ollama")
 var ollamaEndpoint = TryGetEndpointFromConnectionString(ollamaConnectionString)
     ?? throw new InvalidOperationException("Invalid Aspire Ollama connection string. Expected format includes 'Endpoint=...'.");
 var ollamaModel = builder.Configuration["Ollama:Model"] ?? "llama3.2:1b";
+var ollamaHttpClient = new HttpClient
+{
+    BaseAddress = new Uri(ollamaEndpoint),
+    Timeout = TimeSpan.FromSeconds(200)
+};
 
-builder.Services.AddChatClient(new OllamaApiClient(new Uri(ollamaEndpoint), ollamaModel))
+builder.Services.AddChatClient(new OllamaApiClient(ollamaHttpClient, ollamaModel, jsonSerializerContext: null))
     .UseFunctionInvocation()
     .UseOpenTelemetry(sourceName: "OllamaApiClient", configure: c => { c.EnableSensitiveData = true; });
 builder.Services.AddSingleton<IClosetService, ClosetService>();
