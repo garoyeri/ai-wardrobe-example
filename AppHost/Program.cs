@@ -8,7 +8,7 @@ var ollama = builder.AddOllama("ollama")
        c.WithImageTag("0.8.12"); 
     });
 
-var model = ollama.AddModel("model", "qwen3.5:4b");
+var model = ollama.AddModel("model", "granite4:3b");
 
 var api = builder.AddProject<Projects.Api>("api")
     .WithReference(ollama)

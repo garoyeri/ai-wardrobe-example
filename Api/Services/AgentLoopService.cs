@@ -64,7 +64,7 @@ public sealed class AgentLoopService : IAgentLoopService
                 2. Call getClosetItemById as needed to compare colors/patterns qualitatively.
                 3. Call validateOutfitCompleteness with topId, bottomId, shoesId, and jacketId when applicable.
                    - If INCOMPLETE, fill missing slots and re-check.
-                     4. Return a concise final recommendation in plain language.
+                4. Return a concise final recommendation in plain language.
                 """,
             name: "stylist-agent",
             tools:
