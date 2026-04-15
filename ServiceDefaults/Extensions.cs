@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
+using Microsoft.Extensions.Http.Resilience;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.ServiceDiscovery;
 using OpenTelemetry;
@@ -32,7 +33,7 @@ public static class Extensions
             // noisy frontend error behavior when the backend is already failing.
             http.AddStandardResilienceHandler(options =>
             {
-                options.Retry.MaxRetryAttempts = 0;
+                options.Retry.MaxRetryAttempts = 1;
 
                 // Chat completions can take longer than the default resilience timeout.
                 options.TotalRequestTimeout.Timeout = TimeSpan.FromMinutes(3);
