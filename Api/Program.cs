@@ -23,7 +23,8 @@ var ollamaConnectionString = builder.Configuration.GetConnectionString("ollama")
 var ollamaEndpoint = TryGetEndpointFromConnectionString(ollamaConnectionString)
     ?? throw new InvalidOperationException("Invalid Aspire Ollama connection string. Expected format includes 'Endpoint=...'.");
 var ollamaModel = builder.Configuration["Ollama:Model"] ?? "llama3.2:1b";
-var ollamaHttpClient = new HttpClient
+
+var ollamaHttpClient = new HttpClient(new RetryHttpMessageHandler(maxRetries: 3, initialDelay: TimeSpan.FromMilliseconds(500)))
 {
     BaseAddress = new Uri(ollamaEndpoint),
     Timeout = TimeSpan.FromSeconds(200)
