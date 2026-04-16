@@ -920,22 +920,33 @@ internal sealed class OutputExecutor() : Executor<ValidationResult, OutfitWorkfl
         var proposal = result.Proposal;
 
         return $"""
-            Recommended outfit based on the latest weather guidance:
+            Final recommendation: outfit selected.
+
+            Selected outfit based on the latest weather guidance:
             - Top: {proposal.TopId}
             - Bottom: {proposal.BottomId}
             - Shoes: {proposal.ShoesId}
             - Jacket: {proposal.JacketId ?? "(not required)"}
             - Hat: {proposal.HatId ?? "(optional, not selected)"}
 
-            Completion notes: {proposal.CompletenessNotes}
+            Rationale:
+            - Weather guidance: {result.WeatherAdvice}
+            - Validation result: {result.Feedback}
+            - Completion notes: {proposal.CompletenessNotes}
             """;
     }
 
     private static string BuildFailureMessage(ValidationResult result)
     {
         return $"""
+            Final recommendation: no valid outfit selected.
+
             I could not produce a fully valid outfit in {result.Input.MaxAttempts} attempt(s).
-            Last validation result: {result.Feedback}
+
+            Rationale:
+            - Weather guidance: {result.WeatherAdvice}
+            - Last validation result: {result.Feedback}
+
             Last stylist response:
             {result.RawStylistResponse}
             """;

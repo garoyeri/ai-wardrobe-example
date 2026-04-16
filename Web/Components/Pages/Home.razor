@@ -573,6 +573,11 @@
 				{
 					throw new InvalidOperationException("Streaming workflow finished without a final response.");
 				}
+
+				AddChatMessage(
+					ChatMessageKind.Agent,
+					streamEvent.Response.AgentResponse,
+					"✅ Conclusion");
 				break;
 			case AgentLoopEventType.Error:
 				throw new InvalidOperationException(streamEvent.Message);
