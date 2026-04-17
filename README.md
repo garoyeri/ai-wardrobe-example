@@ -1,5 +1,8 @@
 # AI Wardrobe Example
 
+> [!NOTE]
+> This repository was generated with the assistance of [GitHub Copilot](https://github.com/features/copilot) (AI-assisted code generation). Review all code before use in production.
+
 An example application that uses a multi-agent AI workflow to recommend outfits from a virtual closet, based on the current weather forecast. Built with .NET Aspire, Blazor, and a locally-running [Ollama](https://ollama.com) model.
 
 ## Overview
