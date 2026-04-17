@@ -157,7 +157,7 @@ public sealed class AgentLoopService : IAgentLoopService
         var initialStylistExecutor = new InitialStylistExecutor(_stylistAgent, _closetService);
         var retryStylistExecutor = new RetryStylistExecutor(_stylistAgent, _closetService);
         var validateExecutor = new ValidateOutfitExecutor(_closetService, _weatherService);
-        var outputExecutor = new OutputExecutor();
+        var outputExecutor = new OutputExecutor(_closetService);
 
         var workflow = new WorkflowBuilder(weatherExecutor)
             .AddEdge(weatherExecutor, initialStylistExecutor)
@@ -887,7 +887,7 @@ internal sealed class ValidateOutfitExecutor(IClosetService closetService, IWeat
     }
 }
 
-internal sealed class OutputExecutor() : Executor<ValidationResult, OutfitWorkflowOutput>("OutputExecutor")
+internal sealed class OutputExecutor(IClosetService closetService) : Executor<ValidationResult, OutfitWorkflowOutput>("OutputExecutor")
 {
     public override async ValueTask<OutfitWorkflowOutput> HandleAsync(
         ValidationResult result,
@@ -915,25 +915,41 @@ internal sealed class OutputExecutor() : Executor<ValidationResult, OutfitWorkfl
         return output;
     }
 
-    private static string BuildSuccessMessage(ValidationResult result)
+    private string BuildSuccessMessage(ValidationResult result)
     {
         var proposal = result.Proposal;
+        var byId = closetService.List().ToDictionary(item => item.Id, StringComparer.OrdinalIgnoreCase);
 
         return $"""
             Final recommendation: outfit selected.
 
             Selected outfit based on the latest weather guidance:
-            - Top: {proposal.TopId}
-            - Bottom: {proposal.BottomId}
-            - Shoes: {proposal.ShoesId}
-            - Jacket: {proposal.JacketId ?? "(not required)"}
-            - Hat: {proposal.HatId ?? "(optional, not selected)"}
+            - Top: {FormatSelection(byId, proposal.TopId, "(not selected)")}
+            - Bottom: {FormatSelection(byId, proposal.BottomId, "(not selected)")}
+            - Shoes: {FormatSelection(byId, proposal.ShoesId, "(not selected)")}
+            - Jacket: {FormatSelection(byId, proposal.JacketId, "(not required)")}
+            - Hat: {FormatSelection(byId, proposal.HatId, "(optional, not selected)")}
 
             Rationale:
             - Weather guidance: {result.WeatherAdvice}
             - Validation result: {result.Feedback}
             - Completion notes: {proposal.CompletenessNotes}
             """;
+    }
+
+    private static string FormatSelection(
+        Dictionary<string, ClosetItemDto> byId,
+        string? id,
+        string fallback)
+    {
+        if (string.IsNullOrWhiteSpace(id))
+        {
+            return fallback;
+        }
+
+        return byId.TryGetValue(id, out var item)
+            ? $"{item.Name} ({item.Id})"
+            : id;
     }
 
     private static string BuildFailureMessage(ValidationResult result)
