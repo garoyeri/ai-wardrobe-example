@@ -9,7 +9,12 @@ using System.Text.Json;
 var builder = WebApplication.CreateBuilder(args);
 var streamJsonOptions = new JsonSerializerOptions(JsonSerializerDefaults.Web);
 
-builder.AddServiceDefaults();
+const string OllamaSource = "OllamaApiClient";
+
+builder.AddServiceDefaults(configureTrace: tracing =>
+{
+    tracing.AddSource(OllamaSource);
+});
 
 builder.Services.AddOpenApi();
 builder.Services.AddEndpointsApiExplorer();
@@ -32,7 +37,7 @@ var ollamaHttpClient = new HttpClient(new RetryHttpMessageHandler(maxRetries: 3,
 
 builder.Services.AddChatClient(new OllamaApiClient(ollamaHttpClient, ollamaModel, jsonSerializerContext: null))
     .UseFunctionInvocation()
-    .UseOpenTelemetry(sourceName: "OllamaApiClient", configure: c => { c.EnableSensitiveData = true; });
+    .UseOpenTelemetry(sourceName: OllamaSource, configure: c => { c.EnableSensitiveData = true; });
 builder.Services.AddSingleton<IClosetService, ClosetService>();
 builder.Services.AddSingleton<IWeatherService, WeatherService>();
 builder.Services.AddSingleton<IOutfitRecommendationService, OutfitRecommendationService>();
