@@ -35,9 +35,9 @@ public sealed class ClosetService : IClosetService
 
         IEnumerable<ClosetItemDto> query = _items;
 
-        if (request.Roles is { Count: > 0 })
+        if (request.Role.HasValue)
         {
-            query = query.Where(item => request.Roles.All(role => item.Roles.Contains(role)));
+            query = query.Where(item => item.Role == request.Role.Value);
         }
 
         if (request.Colors is { Count: > 0 })
@@ -46,10 +46,10 @@ public sealed class ClosetService : IClosetService
             query = query.Where(item => colors.Any(color => item.Colors.Select(NormalizeTag).Contains(color)));
         }
 
-        if (request.Patterns is { Count: > 0 })
+        if (!string.IsNullOrWhiteSpace(request.Pattern))
         {
-            var patterns = request.Patterns.Select(NormalizeTag).Where(static x => x.Length > 0).ToArray();
-            query = query.Where(item => patterns.Any(pattern => item.Patterns.Select(NormalizeTag).Contains(pattern)));
+            var pattern = NormalizeTag(request.Pattern);
+            query = query.Where(item => NormalizeTag(item.Pattern) == pattern);
         }
 
         if (request.Waterproof.HasValue)
@@ -85,7 +85,7 @@ public sealed class ClosetService : IClosetService
 
     public ClosetItemDto Add(UpsertClosetItemRequest request)
     {
-        var item = ToItem(NextIdForRoles(request.Roles), request);
+        var item = ToItem(NextIdForRole(request.Role), request);
         _items.Add(item);
         return item;
     }
@@ -120,9 +120,9 @@ public sealed class ClosetService : IClosetService
         new(
             NormalizeId(id),
             request.Name.Trim(),
-            request.Roles,
+            request.Role,
             request.Colors,
-            request.Patterns,
+            request.Pattern,
             request.Material.Trim(),
             request.Weight,
             request.Waterproof,
@@ -133,9 +133,9 @@ public sealed class ClosetService : IClosetService
 
     private static string NormalizeId(string value) => value.Trim().ToLowerInvariant();
 
-    private string NextIdForRoles(IReadOnlyList<OutfitRole> roles)
+    private string NextIdForRole(OutfitRole role)
     {
-        var prefix = GetPrefix(roles);
+        var prefix = GetPrefix(role);
         var max = _items
             .Select(item => TryExtractSequence(item.Id, prefix))
             .Where(sequence => sequence.HasValue)
@@ -149,10 +149,9 @@ public sealed class ClosetService : IClosetService
         return $"{prefix}{max + 1:0000}";
     }
 
-    private static string GetPrefix(IReadOnlyList<OutfitRole> roles)
+    private static string GetPrefix(OutfitRole role)
     {
-        var primary = roles.FirstOrDefault();
-        return RolePrefixes.TryGetValue(primary, out var prefix) ? prefix : "item";
+        return RolePrefixes.TryGetValue(role, out var prefix) ? prefix : "item";
     }
 
     private static int? TryExtractSequence(string id, string prefix)
@@ -249,9 +248,9 @@ public sealed class ClosetService : IClosetService
             items.Add(new ClosetItemDto(
                 CreateSeedId(RolePrefixes[OutfitRole.Top], i + 1),
                 topNames[i],
-                [OutfitRole.Top],
+                OutfitRole.Top,
                 [topColors[i]],
-                [patterns[rand.Next(patterns.Length)]],
+                patterns[rand.Next(patterns.Length)],
                 materials[rand.Next(materials.Length)],
                 weights[rand.Next(weights.Length)],
                 false,
@@ -300,9 +299,9 @@ public sealed class ClosetService : IClosetService
             items.Add(new ClosetItemDto(
                 CreateSeedId(RolePrefixes[OutfitRole.Bottom], i + 1),
                 bottomNames[i],
-                [OutfitRole.Bottom],
+                OutfitRole.Bottom,
                 [bottomColors[i]],
-                [patterns[rand.Next(patterns.Length)]],
+                patterns[rand.Next(patterns.Length)],
                 materials[rand.Next(materials.Length)],
                 weights[rand.Next(weights.Length)],
                 false,
@@ -339,9 +338,9 @@ public sealed class ClosetService : IClosetService
             items.Add(new ClosetItemDto(
                 CreateSeedId(RolePrefixes[OutfitRole.Jacket], i + 1),
                 jacketNames[i],
-                [OutfitRole.Jacket],
+                OutfitRole.Jacket,
                 [jacketColors[i]],
-                [patterns[rand.Next(patterns.Length)]],
+                patterns[rand.Next(patterns.Length)],
                 materials[rand.Next(materials.Length)],
                 weights[rand.Next(weights.Length)],
                 rand.Next(2) == 0, // 50% waterproof
@@ -366,9 +365,9 @@ public sealed class ClosetService : IClosetService
             items.Add(new ClosetItemDto(
                 CreateSeedId(RolePrefixes[OutfitRole.Hat], i + 1),
                 hatNames[i],
-                [OutfitRole.Hat],
+                OutfitRole.Hat,
                 [hatColors[i]],
-                [patterns[rand.Next(patterns.Length)]],
+                patterns[rand.Next(patterns.Length)],
                 materials[rand.Next(materials.Length)],
                 weights[rand.Next(weights.Length)],
                 false,
@@ -393,9 +392,9 @@ public sealed class ClosetService : IClosetService
             items.Add(new ClosetItemDto(
                 CreateSeedId(RolePrefixes[OutfitRole.Shoes], i + 1),
                 shoeNames[i],
-                [OutfitRole.Shoes],
+                OutfitRole.Shoes,
                 [shoeColors[i]],
-                [patterns[rand.Next(patterns.Length)]],
+                patterns[rand.Next(patterns.Length)],
                 materials[rand.Next(materials.Length)],
                 weights[rand.Next(weights.Length)],
                 rand.Next(3) == 0, // ~33% waterproof shoes

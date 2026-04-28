@@ -320,9 +320,9 @@ public sealed class AgentLoopService : IAgentLoopService
         var parsedPageSize = ParseOptionalInt(pageSize) ?? 12;
 
         var request = new ClosetSearchRequest(
-            parsedRole is null ? null : [parsedRole.Value],
+            parsedRole,
             string.IsNullOrWhiteSpace(parsedColor) ? null : [parsedColor],
-            string.IsNullOrWhiteSpace(parsedPattern) ? null : [parsedPattern],
+            parsedPattern,
             parsedWaterproof,
             parsedMinWarmth,
             parsedMaxWarmth,
@@ -669,9 +669,9 @@ internal static class StylistExecutorSupport
         {
             item.Id,
             item.Name,
-            Roles = item.Roles.Select(r => r.ToString()).ToArray(),
+            Role = item.Role.ToString(),
             item.Colors,
-            item.Patterns,
+            item.Pattern,
             item.Warmth,
             item.Waterproof,
             Formality = item.Formality.ToString()
@@ -865,7 +865,7 @@ internal sealed class ValidateOutfitExecutor(IClosetService closetService, IWeat
     {
         foreach (var id in ids)
         {
-            if (byId.TryGetValue(id, out var item) && item.Roles.Contains(role))
+            if (byId.TryGetValue(id, out var item) && item.Role == role)
             {
                 return item;
             }

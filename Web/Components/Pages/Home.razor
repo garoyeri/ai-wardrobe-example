@@ -137,8 +137,8 @@
 					<InputText class="form-control" @bind-Value="itemForm.ColorsCsv" />
 				</div>
 				<div class="col-md-4">
-					<label class="form-label">Patterns (comma separated)</label>
-					<InputText class="form-control" @bind-Value="itemForm.PatternsCsv" />
+					<label class="form-label">Pattern</label>
+					<InputText class="form-control" @bind-Value="itemForm.Pattern" />
 				</div>
 				<div class="col-md-2">
 					<label class="form-label">Formality</label>
@@ -157,15 +157,14 @@
 				</div>
 			</div>
 
-			<div class="mt-3">
-				<label class="form-label d-block">Roles</label>
-				@foreach (var role in Enum.GetValues<OutfitRole>())
-				{
-					<div class="form-check form-check-inline">
-						<input type="checkbox" class="form-check-input" checked="@itemForm.Roles.Contains(role)" @onchange="args => ToggleRole(role, args.Value)" />
-						<label class="form-check-label">@role</label>
-					</div>
-				}
+			<div class="mt-3 col-md-4 px-0">
+				<label class="form-label">Role</label>
+				<InputSelect class="form-select" @bind-Value="itemForm.Role">
+					@foreach (var role in Enum.GetValues<OutfitRole>())
+					{
+						<option value="@role">@role</option>
+					}
+				</InputSelect>
 			</div>
 
 			<div class="mt-3 d-flex gap-2">
@@ -181,9 +180,9 @@
 			<thead>
 				<tr>
 					<th>Name</th>
-					<th>Roles</th>
+					<th>Role</th>
 					<th>Colors</th>
-					<th>Patterns</th>
+					<th>Pattern</th>
 					<th></th>
 				</tr>
 			</thead>
@@ -192,9 +191,9 @@
 				{
 					<tr>
 						<td>@item.Name</td>
-						<td>@string.Join(", ", item.Roles)</td>
+						<td>@item.Role</td>
 						<td>@string.Join(", ", item.Colors)</td>
-						<td>@string.Join(", ", item.Patterns)</td>
+						<td>@item.Pattern</td>
 						<td class="text-end">
 							<button class="btn btn-sm btn-outline-primary me-2" @onclick="() => EditItem(item)">Edit</button>
 							<button class="btn btn-sm btn-outline-danger" @onclick="() => DeleteItemAsync(item.Id)">Delete</button>
@@ -344,16 +343,21 @@
 	{
 		await ExecuteAsync(async () =>
 		{
-			if (itemForm.Roles.Count == 0)
+			if (!Enum.IsDefined(itemForm.Role))
 			{
-				throw new InvalidOperationException("Select at least one role.");
+				throw new InvalidOperationException("Select a role.");
+			}
+
+			if (string.IsNullOrWhiteSpace(itemForm.Pattern))
+			{
+				throw new InvalidOperationException("Pattern is required.");
 			}
 
 			var request = new UpsertClosetItemRequest(
 				itemForm.Name,
-				itemForm.Roles,
+				itemForm.Role,
 				SplitCsv(itemForm.ColorsCsv),
-				SplitCsv(itemForm.PatternsCsv),
+				itemForm.Pattern,
 				itemForm.Material,
 				itemForm.Weight,
 				itemForm.Waterproof,
@@ -379,9 +383,9 @@
 		editingId = item.Id;
 		itemForm.Name = item.Name;
 		itemForm.Material = item.Material;
-		itemForm.Roles = item.Roles.ToList();
+		itemForm.Role = item.Role;
 		itemForm.ColorsCsv = string.Join(", ", item.Colors);
-		itemForm.PatternsCsv = string.Join(", ", item.Patterns);
+		itemForm.Pattern = item.Pattern;
 		itemForm.Weight = item.Weight;
 		itemForm.Warmth = item.Warmth;
 		itemForm.Waterproof = item.Waterproof;
@@ -427,19 +431,6 @@
 			await ApiClient.ResetForecastAsync();
 			await LoadForecastAsync();
 		});
-	}
-
-	private void ToggleRole(OutfitRole role, object? value)
-	{
-		var enabled = value is bool b && b;
-		if (enabled && !itemForm.Roles.Contains(role))
-		{
-			itemForm.Roles.Add(role);
-		}
-		else if (!enabled)
-		{
-			itemForm.Roles.Remove(role);
-		}
 	}
 
 	private async Task LoadClosetAsync() =>
@@ -489,12 +480,12 @@
 		itemForm.Name = string.Empty;
 		itemForm.Material = string.Empty;
 		itemForm.ColorsCsv = string.Empty;
-		itemForm.PatternsCsv = string.Empty;
+		itemForm.Pattern = "solid";
 		itemForm.Waterproof = false;
 		itemForm.Warmth = 3;
 		itemForm.Weight = MaterialWeight.Medium;
 		itemForm.Formality = FormalityLevel.Casual;
-		itemForm.Roles.Clear();
+		itemForm.Role = OutfitRole.Top;
 	}
 
 	private static List<string> SplitCsv(string value) =>
@@ -621,12 +612,12 @@
 		public string Name { get; set; } = string.Empty;
 		public string Material { get; set; } = string.Empty;
 		public string ColorsCsv { get; set; } = string.Empty;
-		public string PatternsCsv { get; set; } = "solid";
+		public string Pattern { get; set; } = "solid";
 		public MaterialWeight Weight { get; set; } = MaterialWeight.Medium;
 		public FormalityLevel Formality { get; set; } = FormalityLevel.Casual;
 		public bool Waterproof { get; set; }
 		public int Warmth { get; set; } = 3;
-		public List<OutfitRole> Roles { get; set; } = [];
+		public OutfitRole Role { get; set; } = OutfitRole.Top;
 	}
 
 	private sealed class SegmentFormModel(DaySegment segment)

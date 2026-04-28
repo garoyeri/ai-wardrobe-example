@@ -17,9 +17,14 @@ public static class ClosetEndpointsExtensions
         });
         closet.MapPost("/items", (IClosetService service, UpsertClosetItemRequest request) =>
         {
-            if (request.Roles.Count == 0)
+            if (!Enum.IsDefined(request.Role))
             {
-                return Results.BadRequest("At least one outfit role is required.");
+                return Results.BadRequest("A valid outfit role is required.");
+            }
+
+            if (string.IsNullOrWhiteSpace(request.Pattern))
+            {
+                return Results.BadRequest("A pattern is required.");
             }
 
             return Results.Ok(service.Add(request));

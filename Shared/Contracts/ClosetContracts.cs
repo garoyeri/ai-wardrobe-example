@@ -26,9 +26,9 @@ public enum FormalityLevel
 public sealed record ClosetItemDto(
     string Id,
     string Name,
-    IReadOnlyList<OutfitRole> Roles,
+    OutfitRole Role,
     IReadOnlyList<string> Colors,
-    IReadOnlyList<string> Patterns,
+    string Pattern,
     string Material,
     MaterialWeight Weight,
     bool Waterproof,
@@ -37,9 +37,9 @@ public sealed record ClosetItemDto(
 
 public sealed record UpsertClosetItemRequest(
     string Name,
-    IReadOnlyList<OutfitRole> Roles,
+    OutfitRole Role,
     IReadOnlyList<string> Colors,
-    IReadOnlyList<string> Patterns,
+    string Pattern,
     string Material,
     MaterialWeight Weight,
     bool Waterproof,
@@ -47,9 +47,9 @@ public sealed record UpsertClosetItemRequest(
     FormalityLevel Formality);
 
 public sealed record ClosetSearchRequest(
-    IReadOnlyList<OutfitRole>? Roles = null,
+    OutfitRole? Role = null,
     IReadOnlyList<string>? Colors = null,
-    IReadOnlyList<string>? Patterns = null,
+    string? Pattern = null,
     bool? Waterproof = null,
     int? MinWarmth = null,
     int? MaxWarmth = null,
