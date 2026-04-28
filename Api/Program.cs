@@ -3,7 +3,6 @@ using Api.Extensions;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 using OllamaSharp;
-using Shared.Contracts;
 using System.Text.Json;
 
 var builder = WebApplication.CreateBuilder(args);
