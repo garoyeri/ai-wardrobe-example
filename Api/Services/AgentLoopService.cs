@@ -46,7 +46,7 @@ public sealed class AgentLoopService : IAgentLoopService
         _weatherAgent = new ChatClientAgent(
             chatClient,
             instructions: """
-                /no_think You are a weather-focused clothing planner.
+                You are a weather-focused clothing planner.
                 Call the evaluateWeatherRisk tool and return 2-3 concise sentences about clothing constraints.
                 Cover: minimum temperature, precipitation risk, sun exposure, and needed properties (waterproof, warmth, layering).
                 """,
@@ -59,7 +59,7 @@ public sealed class AgentLoopService : IAgentLoopService
         _stylistAgent = new ChatClientAgent(
             chatClient,
             instructions: """
-                /no_think You are a wardrobe stylist.
+                You are a wardrobe stylist.
                 Use the closet tools to identify specific outfit items.
                 Return ONLY a comma-separated list of closet item IDs and nothing else.
                 Required: top, bottom, shoes.
@@ -77,7 +77,7 @@ public sealed class AgentLoopService : IAgentLoopService
         _summaryAgent = new ChatClientAgent(
             chatClient,
             instructions: """
-                /no_think Summarize long wardrobe planning chats.
+                Summarize long wardrobe planning chats.
                 Keep weather constraints, user style preferences, hard requirements, and unresolved issues.
                 Output concise bullet points.
                 """,
