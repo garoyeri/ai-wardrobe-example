@@ -59,12 +59,23 @@ public sealed class AgentLoopService : IAgentLoopService
         _stylistAgent = new ChatClientAgent(
             chatClient,
             instructions: """
-                You are a wardrobe stylist.
-                Use the closet tools to identify specific outfit items.
-                Return ONLY a comma-separated list of closet item IDs and nothing else.
-                Required: top, bottom, shoes.
+                **Purpose**
+                You are a wardrobe stylist assistant helping users choose an outfit for the day to be safe and comfortable.
+                
+                **Guidelines**
+                Consider the user prompt requirements and the weather constraints.
+                Ask the user for more details if the prompt is vague, for example about the occasion, style preferences, or specific clothing items.
+                Return ONLY a comma-separated list of closet item IDs and nothing else, when searching the closet, the response will have an ID field.
+                Required closet item roles: top, bottom, shoes.
                 Include jacket when rain is likely or minimum temperature is 10C or below.
                 Hat is optional.
+                Use the `searchCloset` tool to search the closet for candidate items based on the user prompt and the weather constraints.
+                Use the `getClosetItemById` tool to get details about specific closet items by ID.
+
+                Consider choosing a color palette for the outfit and using it as a filter when searching for each item.
+                For example, if the user has a preference for navy and white, try to include those colors in the top, bottom, or shoes.
+
+                Once you have a candidate outfit, return it in the prescribed format:                
                 Example output: tops0001,bttm0003,shoe0004,jckt0002,hats0001
                 """,
             name: "stylist-agent",
@@ -642,19 +653,6 @@ internal static class StylistExecutorSupport
         IWorkflowContext context,
         CancellationToken cancellationToken)
     {
-        var closetItems = closetService.List();
-        var closetJson = JsonSerializer.Serialize(closetItems.Select(item => new
-        {
-            item.Id,
-            item.Name,
-            Role = item.Role.ToString(),
-            item.Colors,
-            item.Pattern,
-            item.Warmth,
-            item.Waterproof,
-            Formality = item.Formality.ToString()
-        }));
-
         var retryInstruction = string.IsNullOrWhiteSpace(previousFeedback)
             ? ""
             : $"Validation feedback from previous attempt: {previousFeedback}";
@@ -673,9 +671,6 @@ internal static class StylistExecutorSupport
             - Hat ID is optional.
             - Do not return JSON, markdown, prose, or explanations.
             - If validation says some IDs are already valid, keep them and only replace missing/invalid slots.
-
-            Closet inventory JSON:
-            {closetJson}
 
             Return only IDs like: tops0001,bttm0003,shoe0004,jckt0002,hats0001
             """;
