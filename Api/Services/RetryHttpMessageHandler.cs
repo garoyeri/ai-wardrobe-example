@@ -27,7 +27,7 @@ public class RetryHttpMessageHandler : DelegatingHandler
             try
             {
                 var response = await base.SendAsync(request, cancellationToken);
-                
+
                 // Retry on server errors (5xx) or request timeout (408)
                 if ((int)response.StatusCode >= 500 || response.StatusCode == System.Net.HttpStatusCode.RequestTimeout)
                 {
@@ -40,7 +40,7 @@ public class RetryHttpMessageHandler : DelegatingHandler
                         continue;
                     }
                 }
-                
+
                 return response;
             }
             catch (HttpRequestException) when (attempt < _maxRetries)

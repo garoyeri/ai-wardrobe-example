@@ -5,7 +5,7 @@ var ollama = builder.AddOllama("ollama")
     .WithDataVolume("ollama-data")
     .WithOpenWebUI(c =>
     {
-       c.WithImageTag("0.8.12"); 
+        c.WithImageTag("0.8.12");
     });
 
 var model = ollama.AddModel("model", "granite4:3b");

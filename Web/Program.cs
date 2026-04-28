@@ -61,6 +61,6 @@ app.MapGet("/diagnostics/backend", async (WardrobeApiClient apiClient, Cancellat
     }
 });
 
-    app.MapDefaultEndpoints();
+app.MapDefaultEndpoints();
 
 app.Run();

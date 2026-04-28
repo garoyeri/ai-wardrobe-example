@@ -114,7 +114,7 @@ public sealed class AgentLoopService : IAgentLoopService
 
         // Get or create a CancellationTokenSource for this conversation
         var conversationCts = _cancellationManager.GetOrCreateSource(conversationId);
-        
+
         // Create a linked token source that combines both the external cancellation token
         // and the conversation-specific cancellation token
         using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, conversationCts.Token);
@@ -133,162 +133,162 @@ public sealed class AgentLoopService : IAgentLoopService
             var state = GetOrCreateConversationState(conversationId);
             var (contextSummary, recentTranscript, summaryApplied) = await BuildContextWindowAsync(state, request.Prompt, combinedToken);
 
-        if (summaryApplied)
-        {
+            if (summaryApplied)
+            {
+                yield return new AgentLoopStreamEvent(
+                    conversationId,
+                    ++sequence,
+                    AgentLoopEventType.Summary,
+                    "Conversation context was summarized to stay inside the context window.",
+                    Agent: _summaryAgent.Name,
+                    Stage: "context",
+                    Data: new { state.RollingSummary });
+            }
+
+            var workflowInput = new OutfitWorkflowInput(
+                ConversationId: conversationId,
+                Prompt: request.Prompt,
+                ContextSummary: contextSummary,
+                RecentTranscript: recentTranscript,
+                PageSize: Math.Clamp(request.PageSize, 4, 20),
+                MaxAttempts: Math.Clamp(request.MaxToolCalls, 2, 8));
+
+            var weatherExecutor = new WeatherExecutor(_weatherAgent);
+            var initialStylistExecutor = new InitialStylistExecutor(_stylistAgent, _closetService);
+            var retryStylistExecutor = new RetryStylistExecutor(_stylistAgent, _closetService);
+            var validateExecutor = new ValidateOutfitExecutor(_closetService, _weatherService);
+            var outputExecutor = new OutputExecutor(_closetService);
+
+            var workflow = new WorkflowBuilder(weatherExecutor)
+                .AddEdge(weatherExecutor, initialStylistExecutor)
+                .AddEdge(initialStylistExecutor, validateExecutor)
+                .AddEdge<ValidationResult>(validateExecutor, retryStylistExecutor, condition: result => result is not null && result.NeedsRetry)
+                .AddEdge(retryStylistExecutor, validateExecutor)
+                .AddEdge<ValidationResult>(validateExecutor, outputExecutor, condition: result => result is not null && !result.NeedsRetry)
+                .WithOutputFrom(outputExecutor)
+                .Build();
+
+            await using var run = await InProcessExecution.RunStreamingAsync(workflow, workflowInput);
+            await run.TrySendMessageAsync(new TurnToken(emitEvents: true));
+
             yield return new AgentLoopStreamEvent(
                 conversationId,
                 ++sequence,
-                AgentLoopEventType.Summary,
-                "Conversation context was summarized to stay inside the context window.",
-                Agent: _summaryAgent.Name,
-                Stage: "context",
-                Data: new { state.RollingSummary });
-        }
+                AgentLoopEventType.Status,
+                "Workflow started in streaming mode.",
+                Stage: "workflow");
 
-        var workflowInput = new OutfitWorkflowInput(
-            ConversationId: conversationId,
-            Prompt: request.Prompt,
-            ContextSummary: contextSummary,
-            RecentTranscript: recentTranscript,
-            PageSize: Math.Clamp(request.PageSize, 4, 20),
-            MaxAttempts: Math.Clamp(request.MaxToolCalls, 2, 8));
-
-        var weatherExecutor = new WeatherExecutor(_weatherAgent);
-        var initialStylistExecutor = new InitialStylistExecutor(_stylistAgent, _closetService);
-        var retryStylistExecutor = new RetryStylistExecutor(_stylistAgent, _closetService);
-        var validateExecutor = new ValidateOutfitExecutor(_closetService, _weatherService);
-        var outputExecutor = new OutputExecutor(_closetService);
-
-        var workflow = new WorkflowBuilder(weatherExecutor)
-            .AddEdge(weatherExecutor, initialStylistExecutor)
-            .AddEdge(initialStylistExecutor, validateExecutor)
-            .AddEdge<ValidationResult>(validateExecutor, retryStylistExecutor, condition: result => result is not null && result.NeedsRetry)
-            .AddEdge(retryStylistExecutor, validateExecutor)
-            .AddEdge<ValidationResult>(validateExecutor, outputExecutor, condition: result => result is not null && !result.NeedsRetry)
-            .WithOutputFrom(outputExecutor)
-            .Build();
-
-        await using var run = await InProcessExecution.RunStreamingAsync(workflow, workflowInput);
-        await run.TrySendMessageAsync(new TurnToken(emitEvents: true));
-
-        yield return new AgentLoopStreamEvent(
-            conversationId,
-            ++sequence,
-            AgentLoopEventType.Status,
-            "Workflow started in streaming mode.",
-            Stage: "workflow");
-
-        await foreach (var evt in run.WatchStreamAsync().WithCancellation(combinedToken))
-        {
-            switch (evt)
+            await foreach (var evt in run.WatchStreamAsync().WithCancellation(combinedToken))
             {
-                case WorkflowStartedEvent:
-                    yield return new AgentLoopStreamEvent(
-                        conversationId,
-                        ++sequence,
-                        AgentLoopEventType.Lifecycle,
-                        "Workflow execution started.",
-                        Stage: "workflow");
-                    break;
-                case ExecutorInvokedEvent invoked:
-                    yield return new AgentLoopStreamEvent(
-                        conversationId,
-                        ++sequence,
-                        AgentLoopEventType.Lifecycle,
-                        $"Executor started: {invoked.ExecutorId}",
-                        Executor: invoked.ExecutorId,
-                        Stage: "executor");
-                    break;
-                case ExecutorCompletedEvent completed:
-                    yield return new AgentLoopStreamEvent(
-                        conversationId,
-                        ++sequence,
-                        AgentLoopEventType.Lifecycle,
-                        $"Executor completed: {completed.ExecutorId}",
-                        Executor: completed.ExecutorId,
-                        Stage: "executor");
-                    break;
-                case AgentResponseUpdateEvent update:
-                    var delta = update.Data?.ToString();
-                    if (!string.IsNullOrWhiteSpace(delta))
-                    {
+                switch (evt)
+                {
+                    case WorkflowStartedEvent:
                         yield return new AgentLoopStreamEvent(
                             conversationId,
                             ++sequence,
-                            AgentLoopEventType.AgentDelta,
-                            delta,
-                            Agent: update.ExecutorId,
-                            Executor: update.ExecutorId,
-                            Stage: "agent");
-                    }
-                    break;
-                case AgentResponseEvent responseEvent:
-                    if (responseEvent.Data is not null)
-                    {
+                            AgentLoopEventType.Lifecycle,
+                            "Workflow execution started.",
+                            Stage: "workflow");
+                        break;
+                    case ExecutorInvokedEvent invoked:
                         yield return new AgentLoopStreamEvent(
                             conversationId,
                             ++sequence,
-                            AgentLoopEventType.AgentMessage,
-                            responseEvent.Data.ToString() ?? string.Empty,
-                            Agent: responseEvent.ExecutorId,
-                            Executor: responseEvent.ExecutorId,
-                            Stage: "agent");
-                    }
-                    break;
-                case WorkflowDebugEvent debug:
-                    yield return new AgentLoopStreamEvent(
-                        conversationId,
-                        ++sequence,
-                        debug.DebugType,
-                        debug.Message,
-                        Agent: debug.Agent,
-                        Executor: debug.Executor,
-                        Tool: debug.Tool,
-                        Stage: debug.Stage,
-                        Attempt: debug.Attempt,
-                        Data: debug.Data);
-                    break;
-                case WorkflowOutputEvent output:
-                    if (output.Data is OutfitWorkflowOutput finalOutput)
-                    {
-                        var response = new AgentLoopResponse(
+                            AgentLoopEventType.Lifecycle,
+                            $"Executor started: {invoked.ExecutorId}",
+                            Executor: invoked.ExecutorId,
+                            Stage: "executor");
+                        break;
+                    case ExecutorCompletedEvent completed:
+                        yield return new AgentLoopStreamEvent(
                             conversationId,
-                            finalOutput.AgentResponse,
-                            finalOutput.ToolCalls,
-                            handoffs,
-                            finalOutput.Summary);
+                            ++sequence,
+                            AgentLoopEventType.Lifecycle,
+                            $"Executor completed: {completed.ExecutorId}",
+                            Executor: completed.ExecutorId,
+                            Stage: "executor");
+                        break;
+                    case AgentResponseUpdateEvent update:
+                        var delta = update.Data?.ToString();
+                        if (!string.IsNullOrWhiteSpace(delta))
+                        {
+                            yield return new AgentLoopStreamEvent(
+                                conversationId,
+                                ++sequence,
+                                AgentLoopEventType.AgentDelta,
+                                delta,
+                                Agent: update.ExecutorId,
+                                Executor: update.ExecutorId,
+                                Stage: "agent");
+                        }
+                        break;
+                    case AgentResponseEvent responseEvent:
+                        if (responseEvent.Data is not null)
+                        {
+                            yield return new AgentLoopStreamEvent(
+                                conversationId,
+                                ++sequence,
+                                AgentLoopEventType.AgentMessage,
+                                responseEvent.Data.ToString() ?? string.Empty,
+                                Agent: responseEvent.ExecutorId,
+                                Executor: responseEvent.ExecutorId,
+                                Stage: "agent");
+                        }
+                        break;
+                    case WorkflowDebugEvent debug:
+                        yield return new AgentLoopStreamEvent(
+                            conversationId,
+                            ++sequence,
+                            debug.DebugType,
+                            debug.Message,
+                            Agent: debug.Agent,
+                            Executor: debug.Executor,
+                            Tool: debug.Tool,
+                            Stage: debug.Stage,
+                            Attempt: debug.Attempt,
+                            Data: debug.Data);
+                        break;
+                    case WorkflowOutputEvent output:
+                        if (output.Data is OutfitWorkflowOutput finalOutput)
+                        {
+                            var response = new AgentLoopResponse(
+                                conversationId,
+                                finalOutput.AgentResponse,
+                                finalOutput.ToolCalls,
+                                handoffs,
+                                finalOutput.Summary);
 
-                        finalResponse = response;
+                            finalResponse = response;
 
+                            yield return new AgentLoopStreamEvent(
+                                conversationId,
+                                ++sequence,
+                                AgentLoopEventType.Complete,
+                                "Workflow completed.",
+                                Agent: "stylist-agent",
+                                Stage: "output",
+                                Response: response,
+                                Data: finalOutput);
+                        }
+                        break;
+                    case WorkflowErrorEvent error:
                         yield return new AgentLoopStreamEvent(
                             conversationId,
                             ++sequence,
-                            AgentLoopEventType.Complete,
-                            "Workflow completed.",
-                            Agent: "stylist-agent",
-                            Stage: "output",
-                            Response: response,
-                            Data: finalOutput);
-                    }
-                    break;
-                case WorkflowErrorEvent error:
-                    yield return new AgentLoopStreamEvent(
-                        conversationId,
-                        ++sequence,
-                        AgentLoopEventType.Error,
-                        error.Exception?.Message ?? "Unknown workflow error",
-                        Stage: "workflow",
-                        Data: error.Exception?.ToString());
-                    break;
+                            AgentLoopEventType.Error,
+                            error.Exception?.Message ?? "Unknown workflow error",
+                            Stage: "workflow",
+                            Data: error.Exception?.ToString());
+                        break;
+                }
             }
-        }
 
-        if (finalResponse is null)
-        {
-            throw new InvalidOperationException("Workflow completed without an output payload.");
-        }
+            if (finalResponse is null)
+            {
+                throw new InvalidOperationException("Workflow completed without an output payload.");
+            }
 
-        state.AppendTurn(request.Prompt, finalResponse.AgentResponse);
+            state.AppendTurn(request.Prompt, finalResponse.AgentResponse);
         }
         finally
         {
