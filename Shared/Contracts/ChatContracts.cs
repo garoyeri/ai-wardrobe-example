@@ -21,23 +21,16 @@ public sealed record AgentToolCallTrace(
     int ResultCount,
     string Summary);
 
-public sealed record AgentHandoffTrace(
-    string From,
-    string To,
-    string Note);
-
 public sealed record AgentLoopResponse(
     string ConversationId,
     string AgentResponse,
     IReadOnlyList<AgentToolCallTrace> ToolCalls,
-    IReadOnlyList<AgentHandoffTrace> Handoffs,
     string Summary);
 
 public static class AgentLoopEventType
 {
     public const string Status = "status";
     public const string Lifecycle = "lifecycle";
-    public const string Handoff = "handoff";
     public const string AgentMessage = "agent-message";
     public const string AgentDelta = "agent-delta";
     public const string Validation = "validation";
@@ -60,5 +53,4 @@ public sealed record AgentLoopStreamEvent(
     int? Attempt = null,
     object? Data = null,
     AgentToolCallTrace? ToolCall = null,
-    AgentHandoffTrace? Handoff = null,
     AgentLoopResponse? Response = null);

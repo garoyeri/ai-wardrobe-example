@@ -124,11 +124,6 @@ public sealed class AgentLoopService : IAgentLoopService
         {
             var sequence = 0;
             AgentLoopResponse? finalResponse = null;
-            var handoffs = new List<AgentHandoffTrace>
-            {
-                new("user", "weather-agent", "Collect weather constraints from latest forecast."),
-                new("weather-agent", "stylist-agent", "Weather guidance is ready for outfit generation.")
-            };
 
             var state = GetOrCreateConversationState(conversationId);
             var (contextSummary, recentTranscript, summaryApplied) = await BuildContextWindowAsync(state, request.Prompt, combinedToken);
@@ -162,9 +157,9 @@ public sealed class AgentLoopService : IAgentLoopService
             var workflow = new WorkflowBuilder(weatherExecutor)
                 .AddEdge(weatherExecutor, initialStylistExecutor)
                 .AddEdge(initialStylistExecutor, validateExecutor)
-                .AddEdge<ValidationResult>(validateExecutor, retryStylistExecutor, condition: result => result is not null && result.NeedsRetry)
+                .AddEdge<ValidationResult>(validateExecutor, retryStylistExecutor, condition: result => result?.NeedsRetry ?? true)
                 .AddEdge(retryStylistExecutor, validateExecutor)
-                .AddEdge<ValidationResult>(validateExecutor, outputExecutor, condition: result => result is not null && !result.NeedsRetry)
+                .AddEdge<ValidationResult>(validateExecutor, outputExecutor, condition: result => !(result?.NeedsRetry ?? true))
                 .WithOutputFrom(outputExecutor)
                 .Build();
 
@@ -255,7 +250,6 @@ public sealed class AgentLoopService : IAgentLoopService
                                 conversationId,
                                 finalOutput.AgentResponse,
                                 finalOutput.ToolCalls,
-                                handoffs,
                                 finalOutput.Summary);
 
                             finalResponse = response;
@@ -599,13 +593,6 @@ internal sealed class WeatherExecutor(ChatClientAgent weatherAgent) : Executor<O
         IWorkflowContext context,
         CancellationToken cancellationToken = default)
     {
-        await context.AddEventAsync(new WorkflowDebugEvent(
-            AgentLoopEventType.Handoff,
-            "Handoff: user -> weather-agent",
-            agent: "weather-agent",
-            executor: "WeatherExecutor",
-            stage: "weather"));
-
         var prompt = $"""
             User prompt: {input.Prompt}
             Recent conversation summary:
@@ -655,15 +642,6 @@ internal static class StylistExecutorSupport
         IWorkflowContext context,
         CancellationToken cancellationToken)
     {
-        await context.AddEventAsync(new WorkflowDebugEvent(
-            AgentLoopEventType.Handoff,
-            "Handoff: weather-agent -> stylist-agent",
-            agent: "stylist-agent",
-            executor: executorName,
-            stage: "stylist",
-            attempt: attempt,
-            data: previousFeedback));
-
         var closetItems = closetService.List();
         var closetJson = JsonSerializer.Serialize(closetItems.Select(item => new
         {

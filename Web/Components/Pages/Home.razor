@@ -517,9 +517,6 @@
 			case AgentLoopEventType.Lifecycle:
 				AddChatMessage(ChatMessageKind.Workflow, streamEvent.Message, "Workflow");
 				break;
-			case AgentLoopEventType.Handoff:
-				AddChatMessage(ChatMessageKind.Workflow, $"Handoff to {streamEvent.Agent ?? streamEvent.Executor}: {streamEvent.Message}", "Workflow");
-				break;
 			case AgentLoopEventType.AgentDelta:
 				AddChatMessage(ChatMessageKind.Workflow, $"{ResolveAgentAuthor(streamEvent.Agent)} streaming: {streamEvent.Message}", "Workflow");
 				break;
