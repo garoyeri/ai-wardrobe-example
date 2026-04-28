@@ -40,8 +40,6 @@ builder.Services.AddChatClient(new OllamaApiClient(ollamaHttpClient, ollamaModel
     .UseOpenTelemetry(sourceName: OllamaSource, configure: c => { c.EnableSensitiveData = true; });
 builder.Services.AddSingleton<IClosetService, ClosetService>();
 builder.Services.AddSingleton<IWeatherService, WeatherService>();
-builder.Services.AddSingleton<IOutfitRecommendationService, OutfitRecommendationService>();
-builder.Services.AddSingleton<IAgentExplanationService, AgentExplanationService>();
 builder.Services.AddSingleton<IConversationCancellationManager, ConversationCancellationManager>();
 builder.Services.AddSingleton<IAgentLoopService, AgentLoopService>();
 
@@ -104,27 +102,6 @@ weather.MapPost("/reset", (IWeatherService service) =>
 {
     service.Reset();
     return Results.NoContent();
-});
-
-app.MapPost("/api/chat/recommend", async (
-    ChatRequest request,
-    IClosetService closetService,
-    IWeatherService weatherService,
-    IAgentExplanationService explanationService,
-    IOutfitRecommendationService recommendationService,
-    CancellationToken cancellationToken) =>
-{
-    if (string.IsNullOrWhiteSpace(request.Prompt))
-    {
-        return Results.BadRequest("Prompt is required.");
-    }
-
-    var closetItems = closetService.List();
-    var forecast = weatherService.Get();
-    var explanation = await explanationService.BuildExplanationAsync(request, closetItems, forecast, cancellationToken);
-    var recommendation = recommendationService.Recommend(request, closetItems, forecast, explanation);
-
-    return Results.Ok(recommendation);
 });
 
 app.MapPost("/api/chat/agent-loop", async (

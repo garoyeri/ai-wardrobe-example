@@ -25,9 +25,6 @@
 			<h3>Wardrobe Chat</h3>
 			<div class="btn-group" role="group">
 				<button class="btn btn-outline-secondary" @onclick="StartNewChatAsync" disabled="@isBusy">New Chat</button>
-				<button class="btn btn-outline-info" @onclick="ToggleAgentLoop">
-					@(useAgentLoop ? "🤖 Agent Loop" : "🔧 Simple")
-				</button>
 			</div>
 		</div>
 
@@ -92,7 +89,7 @@
 			<div class="alert alert-danger mt-2 mb-0">@errorMessage</div>
 		}
 
-		@if (useAgentLoop && !string.IsNullOrWhiteSpace(agentConversationId))
+		@if (!string.IsNullOrWhiteSpace(agentConversationId))
 		{
 			<small class="text-muted d-block mt-2">
 				Thread ID: @(agentConversationId?.Substring(0, Math.Min(12, agentConversationId.Length)) ?? "")...
@@ -257,7 +254,6 @@
 @code {
 	private string activeTab = "chat";
 	private bool isBusy;
-	private bool useAgentLoop = true;
 	private string? errorMessage;
 	private string? agentConversationId;
 	private string currentMessage = string.Empty;
@@ -299,27 +295,15 @@
 		{
 			AddChatMessage(ChatMessageKind.User, userMessage);
 
-			if (useAgentLoop)
+			await foreach (var streamEvent in ApiClient.StreamAgentLoopAsync(new AgentLoopRequest(
+				userMessage,
+				ConversationId: agentConversationId,
+				MaxToolCalls: 6,
+				PageSize: 12)))
 			{
-				await foreach (var streamEvent in ApiClient.StreamAgentLoopAsync(new AgentLoopRequest(
-					userMessage,
-					ConversationId: agentConversationId,
-					MaxToolCalls: 6,
-					PageSize: 12)))
-				{
-					agentConversationId = streamEvent.ConversationId;
-					HandleStreamEvent(streamEvent);
-					await InvokeAsync(StateHasChanged);
-				}
-			}
-			else
-			{
-				var recommendation = await ApiClient.RecommendOutfitAsync(new ChatRequest(userMessage));
-
-				if (recommendation is not null)
-				{
-					AddChatMessage(ChatMessageKind.Agent, recommendation.AgentExplanation, "🤖 Agent");
-				}
+				agentConversationId = streamEvent.ConversationId;
+				HandleStreamEvent(streamEvent);
+				await InvokeAsync(StateHasChanged);
 			}
 		});
 	}
@@ -354,11 +338,6 @@
 				errorMessage = $"Failed to stop chat: {ex.Message}";
 			}
 		});
-	}
-
-	private void ToggleAgentLoop()
-	{
-		useAgentLoop = !useAgentLoop;
 	}
 
 	private async Task SaveItemAsync()

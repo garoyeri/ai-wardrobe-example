@@ -61,13 +61,6 @@ public sealed class WardrobeApiClient(HttpClient httpClient)
         response.EnsureSuccessStatusCode();
     }
 
-    public async Task<OutfitRecommendationDto?> RecommendOutfitAsync(ChatRequest request, CancellationToken cancellationToken = default)
-    {
-        var response = await httpClient.PostAsJsonAsync("/api/chat/recommend", request, cancellationToken);
-        response.EnsureSuccessStatusCode();
-        return await response.Content.ReadFromJsonAsync<OutfitRecommendationDto>(cancellationToken);
-    }
-
     public async Task<AgentLoopResponse?> RecommendOutfitWithAgentLoopAsync(AgentLoopRequest request, CancellationToken cancellationToken = default)
     {
         var response = await httpClient.PostAsJsonAsync("/api/chat/agent-loop", request, cancellationToken);
