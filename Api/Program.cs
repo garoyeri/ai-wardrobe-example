@@ -1,4 +1,5 @@
 using Api.Services;
+using Api.Extensions;
 using Microsoft.Agents.AI;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.Extensions.AI;
@@ -58,51 +59,8 @@ if (!app.Environment.IsDevelopment())
 }
 app.UseCors();
 
-var closet = app.MapGroup("/api/closet");
-closet.MapGet("/items", (IClosetService service) => Results.Ok(service.List()));
-closet.MapPost("/items/search", (IClosetService service, ClosetSearchRequest request) =>
-{
-    var result = service.Search(request);
-    return Results.Ok(result);
-});
-closet.MapPost("/items", (IClosetService service, UpsertClosetItemRequest request) =>
-{
-    if (request.Roles.Count == 0)
-    {
-        return Results.BadRequest("At least one outfit role is required.");
-    }
-
-    return Results.Ok(service.Add(request));
-});
-closet.MapPut("/items/{id}", (IClosetService service, string id, UpsertClosetItemRequest request) =>
-{
-    var updated = service.Update(id, request);
-    return updated is null ? Results.NotFound() : Results.Ok(updated);
-});
-closet.MapDelete("/items/{id}", (IClosetService service, string id) =>
-    service.Delete(id) ? Results.NoContent() : Results.NotFound());
-closet.MapPost("/reset", (IClosetService service) =>
-{
-    service.Reset();
-    return Results.NoContent();
-});
-
-var weather = app.MapGroup("/api/weather");
-weather.MapGet("/forecast", (IWeatherService service) => Results.Ok(service.Get()));
-weather.MapPut("/forecast", (IWeatherService service, UpdateForecastRequest request) =>
-{
-    if (request.Segments.Count == 0)
-    {
-        return Results.BadRequest("At least one segment forecast is required.");
-    }
-
-    return Results.Ok(service.Update(request));
-});
-weather.MapPost("/reset", (IWeatherService service) =>
-{
-    service.Reset();
-    return Results.NoContent();
-});
+app.MapClosetEndpoints();
+app.MapWeatherEndpoints();
 
 app.MapPost("/api/chat/agent-loop", async (
     AgentLoopRequest request,
