@@ -25,6 +25,7 @@ public sealed class ClosetService : IClosetService
     private const ulong EmbeddingDimensions = 768;
     private const int MaxPageSize = 50;
     private const int EmbeddingBatchSize = 32;
+    private const float SemanticScoreThreshold = 0.60f;
 
     private static readonly IReadOnlyDictionary<OutfitRole, string> RolePrefixes = new Dictionary<OutfitRole, string>
     {
@@ -226,7 +227,7 @@ public sealed class ClosetService : IClosetService
         }
 
         var embedding = await _embeddings.GenerateAsync(description, cancellationToken: cancellationToken);
-        var response = await _qdrant.SearchAsync(
+        var allResults = await _qdrant.SearchAsync(
             CollectionName,
             embedding.Vector.ToArray(),
             filter: filter,
@@ -235,7 +236,9 @@ public sealed class ClosetService : IClosetService
             vectorsSelector: false,
             cancellationToken: cancellationToken);
 
-        return response.Select(p => PayloadToItem(p.Payload)).ToArray();
+        return [.. allResults
+            .Where(p => p.Score >= SemanticScoreThreshold)
+            .Select(p => PayloadToItem(p.Payload))];
     }
 
     private async Task<ClosetItemDto[]> ScrollAllAsync(Filter? filter, CancellationToken cancellationToken)

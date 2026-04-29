@@ -176,7 +176,26 @@
 			</div>
 		</EditForm>
 
-		<table class="table table-striped mt-4">
+		<div class="mt-4 mb-2">
+			<div class="input-group">
+				<input type="text" class="form-control" placeholder="Search by description (e.g. warm blue casual jacket)..."
+					@bind="searchDescription"
+					@onkeyup="@(e => e.Key == "Enter" && !isBusy ? SearchClosetAsync() : Task.CompletedTask)"
+					disabled="@isBusy" />
+				<button class="btn btn-outline-primary" @onclick="SearchClosetAsync"
+					disabled="@(isBusy || string.IsNullOrWhiteSpace(searchDescription))">Search</button>
+				@if (isSearchActive)
+				{
+					<button class="btn btn-outline-secondary" @onclick="ClearSearchAsync" disabled="@isBusy">Clear</button>
+				}
+			</div>
+			@if (isSearchActive)
+			{
+				<small class="text-muted">Showing @displayedItems.Count result(s) for "@lastSearchDescription"</small>
+			}
+		</div>
+
+		<table class="table table-striped mt-2">
 			<thead>
 				<tr>
 					<th>Name</th>
@@ -187,7 +206,7 @@
 				</tr>
 			</thead>
 			<tbody>
-				@foreach (var item in closetItems)
+				@foreach (var item in displayedItems)
 				{
 					<tr>
 						<td>@item.Name</td>
@@ -263,6 +282,11 @@
 		.Build();
 	private readonly ClosetItemFormModel itemForm = new();
 	private IReadOnlyList<ClosetItemDto> closetItems = [];
+	private IReadOnlyList<ClosetItemDto> searchResults = [];
+	private string searchDescription = string.Empty;
+	private string lastSearchDescription = string.Empty;
+	private bool isSearchActive;
+	private IReadOnlyList<ClosetItemDto> displayedItems => isSearchActive ? searchResults : closetItems;
 	private string? editingId;
 	private DateOnly forecastDate = DateOnly.FromDateTime(DateTime.Today);
 	private List<SegmentFormModel> segmentForms = [
@@ -407,6 +431,10 @@
 		{
 			await ApiClient.ResetClosetAsync();
 			ClearItemForm();
+			searchDescription = string.Empty;
+			lastSearchDescription = string.Empty;
+			isSearchActive = false;
+			searchResults = [];
 			await LoadClosetAsync();
 		});
 	}
@@ -431,6 +459,29 @@
 			await ApiClient.ResetForecastAsync();
 			await LoadForecastAsync();
 		});
+	}
+
+	private async Task SearchClosetAsync()
+	{
+		if (string.IsNullOrWhiteSpace(searchDescription))
+			return;
+
+		await ExecuteAsync(async () =>
+		{
+			var result = await ApiClient.SearchClosetAsync(new ClosetSearchRequest(Description: searchDescription, PageSize: 50));
+			searchResults = result.Items;
+			lastSearchDescription = searchDescription;
+			isSearchActive = true;
+		});
+	}
+
+	private async Task ClearSearchAsync()
+	{
+		searchDescription = string.Empty;
+		lastSearchDescription = string.Empty;
+		isSearchActive = false;
+		searchResults = [];
+		await LoadClosetAsync();
 	}
 
 	private async Task LoadClosetAsync() =>
