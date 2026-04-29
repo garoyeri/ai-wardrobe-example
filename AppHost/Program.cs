@@ -1,11 +1,11 @@
 var builder = DistributedApplication.CreateBuilder(args);
 
 var ollama = builder.AddOllama("ollama")
-    .WithImageTag("0.20.8-rc0")
+    .WithImageTag("0.21.2")
     .WithDataVolume("ollama-data")
     .WithOpenWebUI(c =>
     {
-        c.WithImageTag("0.8.12");
+        c.WithImageTag("0.9.2");
     });
 
 var model = ollama.AddModel("model", "granite4:3b");
