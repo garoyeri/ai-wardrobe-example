@@ -12,7 +12,12 @@ public sealed record OutfitCandidateProposal(
     string? ShoesId,
     string? HatId,
     string? JacketId,
-    string CompletenessNotes);
+    string CompletenessNotes)
+{
+    public string Description =>
+        $"Proposed outfit: top={TopId ?? "none"}, bottom={BottomId ?? "none"}, shoes={ShoesId ?? "none"}, " +
+        $"hat={HatId ?? "none"}, jacket={JacketId ?? "none"}. Notes: {CompletenessNotes}";
+}
 
 public sealed record AgentToolCallTrace(
     string Agent,

@@ -64,18 +64,25 @@ public sealed class AgentLoopService : IAgentLoopService
                 
                 **Guidelines**
                 Consider the user prompt requirements and the weather constraints.
-                Ask the user for more details if the prompt is vague, for example about the occasion, style preferences, or specific clothing items.
+                Don't ask for additional information from the user, use the available tools to fill in any missing information or resolve ambiguities,
+                do your best with the information you have, and return a proposed outfit based on the closet inventory.
                 
                 When returning a complete output, return ONLY a comma-separated list of closet item IDs and nothing else, when searching the closet, the response will have an ID field.
-                Required closet item roles: top, bottom, shoes.
+                Required closet item roles: top, bottom, shoes. Outfit is incomplete without these. Optional closet item roles: jacket, hat.
                 Include jacket when rain is likely or minimum temperature is 10C or below.
-                Hat is optional.
                 Use the `searchClosetByDescription` tool to search the closet for candidate items based on the user prompt and the weather constraints.
                 Use the `searchCloset` tool to apply specific filters for role, color, pattern, warmth, and waterproof requirements.
                 Use the `getClosetItemById` tool to get details about specific closet items by ID.
 
                 Consider choosing a color palette for the outfit and using it as a filter when searching for each item.
                 For example, if the user has a preference for navy and white, try to include those colors in the top, bottom, or shoes.
+
+                When the user prompt includes a specific style or color, only one slot needs to match that requirement for the outfit to be considered compliant, for example
+                if the user asks for a "navy blue dress", an outfit with a navy top and non-navy bottom and shoes would meet the requirement.
+
+                Beware that shoes won't necessarily match color choices, unless the user explicitly requires a certain color for shoes, in which case try to meet that requirement as well.
+
+                If you can't find items to meet all the requirements, return the closest outfit you can find and include notes about which requirements are not fully met and what the missing item roles are.
 
                 Once you have a candidate outfit, return it in the prescribed format:                
                 Example output: tops0001,bttm0003,shoe0004,jckt0002,hats0001
@@ -163,8 +170,8 @@ public sealed class AgentLoopService : IAgentLoopService
                 MaxAttempts: Math.Clamp(request.MaxToolCalls, 2, 8));
 
             var weatherExecutor = new WeatherExecutor(_weatherAgent);
-            var initialStylistExecutor = new InitialStylistExecutor(_stylistAgent, _closetService);
-            var retryStylistExecutor = new RetryStylistExecutor(_stylistAgent, _closetService);
+            var initialStylistExecutor = new InitialStylistExecutor(_stylistAgent);
+            var retryStylistExecutor = new RetryStylistExecutor(_stylistAgent);
             var validateExecutor = new ValidateOutfitExecutor(_closetService, _weatherService);
             var outputExecutor = new OutputExecutor(_closetService);
 
@@ -656,10 +663,10 @@ internal static class StylistExecutorSupport
 
     public static async Task<StylistDraft> RunStylistAttemptAsync(
         ChatClientAgent stylistAgent,
-        IClosetService closetService,
         OutfitWorkflowInput input,
         string weatherAdvice,
         int attempt,
+        OutfitCandidateProposal? currentProposal,
         string? previousFeedback,
         IReadOnlyList<AgentToolCallTrace> toolCalls,
         string executorName,
@@ -672,20 +679,14 @@ internal static class StylistExecutorSupport
 
         var prompt = $"""
             User prompt: {input.Prompt}
+            
             Weather advice: {weatherAdvice}
+            
             Attempt: {attempt} of {input.MaxAttempts}
-            Max closet page size hint: {input.PageSize}
+
+            Current Proposed Outfit: {currentProposal?.Description ?? "none yet"}
+
             {retryInstruction}
-
-            Completion rules:
-            - Return ONLY a comma-separated list of closet item IDs.
-            - Required IDs: one top, one bottom, one shoes.
-            - Include a jacket ID when rain is likely or minimum temperature is 10C or below.
-            - Hat ID is optional.
-            - Do not return JSON, markdown, prose, or explanations.
-            - If validation says some IDs are already valid, keep them and only replace missing/invalid slots.
-
-            Return only IDs like: tops0001,bttm0003,shoe0004,jckt0002,hats0001
             """;
 
         var response = await stylistAgent.RunAsync(prompt, cancellationToken: cancellationToken);
@@ -731,7 +732,7 @@ internal static class StylistExecutorSupport
     }
 }
 
-internal sealed class InitialStylistExecutor(ChatClientAgent stylistAgent, IClosetService closetService) : Executor<WeatherAdviceResult, StylistDraft>("InitialStylistExecutor")
+internal sealed class InitialStylistExecutor(ChatClientAgent stylistAgent) : Executor<WeatherAdviceResult, StylistDraft>("InitialStylistExecutor")
 {
     public override async ValueTask<StylistDraft> HandleAsync(
         WeatherAdviceResult input,
@@ -740,10 +741,10 @@ internal sealed class InitialStylistExecutor(ChatClientAgent stylistAgent, IClos
     {
         return await StylistExecutorSupport.RunStylistAttemptAsync(
             stylistAgent,
-            closetService,
             input.Input,
             input.AdviceText,
             attempt: 1,
+            currentProposal: null,
             previousFeedback: null,
             [input.ToolTrace],
             executorName: "InitialStylistExecutor",
@@ -752,7 +753,7 @@ internal sealed class InitialStylistExecutor(ChatClientAgent stylistAgent, IClos
     }
 }
 
-internal sealed class RetryStylistExecutor(ChatClientAgent stylistAgent, IClosetService closetService) : Executor<ValidationResult, StylistDraft>("RetryStylistExecutor")
+internal sealed class RetryStylistExecutor(ChatClientAgent stylistAgent) : Executor<ValidationResult, StylistDraft>("RetryStylistExecutor")
 {
     public override async ValueTask<StylistDraft> HandleAsync(
         ValidationResult validation,
@@ -761,10 +762,10 @@ internal sealed class RetryStylistExecutor(ChatClientAgent stylistAgent, ICloset
     {
         return await StylistExecutorSupport.RunStylistAttemptAsync(
             stylistAgent,
-            closetService,
             validation.Input,
             validation.WeatherAdvice,
             validation.Attempt + 1,
+            validation.Proposal,
             validation.Feedback,
             validation.ToolCalls,
             executorName: "RetryStylistExecutor",
@@ -820,8 +821,8 @@ internal sealed class ValidateOutfitExecutor(IClosetService closetService, IWeat
         var valid = missing.Count == 0;
         var needsRetry = !valid && draft.Attempt < draft.Input.MaxAttempts;
         var feedback = valid
-            ? $"COMPLETE: candidate resolved from IDs [{string.Join(",", providedIds)}]. top={DescribeSelection(byId, normalizedProposal.TopId)}; bottom={DescribeSelection(byId, normalizedProposal.BottomId)}; shoes={DescribeSelection(byId, normalizedProposal.ShoesId)}; jacket={(jacketRequired ? DescribeSelection(byId, normalizedProposal.JacketId) : "optional")}; hat={DescribeSelection(byId, normalizedProposal.HatId)}"
-            : $"INCOMPLETE: missing or invalid slots - {string.Join(",", missing)}. Provided IDs=[{string.Join(", ", providedIds)}]. Current candidate: top={DescribeSelection(byId, normalizedProposal.TopId)}; bottom={DescribeSelection(byId, normalizedProposal.BottomId)}; shoes={DescribeSelection(byId, normalizedProposal.ShoesId)}; jacket={DescribeSelection(byId, normalizedProposal.JacketId)}; hat={DescribeSelection(byId, normalizedProposal.HatId)}";
+            ? $"COMPLETE"
+            : $"INCOMPLETE: missing or invalid slots - {completenessNotes}.";
 
         await context.AddEventAsync(new WorkflowDebugEvent(
             AgentLoopEventType.Validation,
