@@ -33,7 +33,14 @@ public sealed record ClosetItemDto(
     MaterialWeight Weight,
     bool Waterproof,
     int Warmth,
-    FormalityLevel Formality);
+    FormalityLevel Formality)
+{
+    public string Description =>
+        $"{Name} (id {Id}) is a {Formality} {Role} made of {Weight} {Material} " +
+        $"in {(Colors.Count == 0 ? "no specified color" : string.Join("/", Colors))} " +
+        $"with a {Pattern} pattern. Warmth rating {Warmth}/10, " +
+        $"{(Waterproof ? "waterproof" : "not waterproof")}.";
+}
 
 public sealed record UpsertClosetItemRequest(
     string Name,
