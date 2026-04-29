@@ -65,11 +65,13 @@ public sealed class AgentLoopService : IAgentLoopService
                 **Guidelines**
                 Consider the user prompt requirements and the weather constraints.
                 Ask the user for more details if the prompt is vague, for example about the occasion, style preferences, or specific clothing items.
-                Return ONLY a comma-separated list of closet item IDs and nothing else, when searching the closet, the response will have an ID field.
+                
+                When returning a complete output, return ONLY a comma-separated list of closet item IDs and nothing else, when searching the closet, the response will have an ID field.
                 Required closet item roles: top, bottom, shoes.
                 Include jacket when rain is likely or minimum temperature is 10C or below.
                 Hat is optional.
-                Use the `searchCloset` tool to search the closet for candidate items based on the user prompt and the weather constraints.
+                Use the `searchClosetByDescription` tool to search the closet for candidate items based on the user prompt and the weather constraints.
+                Use the `searchCloset` tool to apply specific filters for role, color, pattern, warmth, and waterproof requirements.
                 Use the `getClosetItemById` tool to get details about specific closet items by ID.
 
                 Consider choosing a color palette for the outfit and using it as a filter when searching for each item.
@@ -81,6 +83,7 @@ public sealed class AgentLoopService : IAgentLoopService
             name: "stylist-agent",
             tools:
             [
+                AIFunctionFactory.Create(SearchClosetByDescriptionTool, name: "searchClosetByDescription"),
                 AIFunctionFactory.Create(SearchClosetTool, name: "searchCloset"),
                 AIFunctionFactory.Create(GetClosetItemByIdTool, name: "getClosetItemById")
             ]);
@@ -300,6 +303,15 @@ public sealed class AgentLoopService : IAgentLoopService
             // Clean up the cancellation token source when the stream completes
             _cancellationManager.Cleanup(conversationId);
         }
+    }
+
+    [Description("Search closet inventory with a natural language description of the desired item. For example, 'a navy blue waterproof jacket suitable for rainy weather.')]")]
+    public async Task<string> SearchClosetByDescriptionTool(
+        [Description("Description of the item you're looking for, for example 'a navy blue waterproof jacket suitable for rainy weather.'")] string description)
+    {
+        var request = new ClosetSearchRequest(Description: description);
+        var result = await _closetService.SearchAsync(request, default);
+        return JsonSerializer.Serialize(result);
     }
 
     [Description("Search closet inventory with bounded paging and filters for role, color, pattern, warmth, and weather safety. Accepts plain scalar values or single-value arrays.")]
@@ -808,8 +820,8 @@ internal sealed class ValidateOutfitExecutor(IClosetService closetService, IWeat
         var valid = missing.Count == 0;
         var needsRetry = !valid && draft.Attempt < draft.Input.MaxAttempts;
         var feedback = valid
-            ? $"COMPLETE: candidate resolved from IDs [{string.Join(",", providedIds)}]. top={DescribeSelection(byId, normalizedProposal.TopId)}, bottom={DescribeSelection(byId, normalizedProposal.BottomId)}, shoes={DescribeSelection(byId, normalizedProposal.ShoesId)}, jacket={(jacketRequired ? DescribeSelection(byId, normalizedProposal.JacketId) : "optional")}, hat={DescribeSelection(byId, normalizedProposal.HatId)}"
-            : $"INCOMPLETE: missing or invalid slots - {string.Join(", ", missing)}. Provided IDs=[{string.Join(",", providedIds)}]. Current candidate: top={DescribeSelection(byId, normalizedProposal.TopId)}, bottom={DescribeSelection(byId, normalizedProposal.BottomId)}, shoes={DescribeSelection(byId, normalizedProposal.ShoesId)}, jacket={DescribeSelection(byId, normalizedProposal.JacketId)}, hat={DescribeSelection(byId, normalizedProposal.HatId)}";
+            ? $"COMPLETE: candidate resolved from IDs [{string.Join(",", providedIds)}]. top={DescribeSelection(byId, normalizedProposal.TopId)}; bottom={DescribeSelection(byId, normalizedProposal.BottomId)}; shoes={DescribeSelection(byId, normalizedProposal.ShoesId)}; jacket={(jacketRequired ? DescribeSelection(byId, normalizedProposal.JacketId) : "optional")}; hat={DescribeSelection(byId, normalizedProposal.HatId)}"
+            : $"INCOMPLETE: missing or invalid slots - {string.Join(",", missing)}. Provided IDs=[{string.Join(", ", providedIds)}]. Current candidate: top={DescribeSelection(byId, normalizedProposal.TopId)}; bottom={DescribeSelection(byId, normalizedProposal.BottomId)}; shoes={DescribeSelection(byId, normalizedProposal.ShoesId)}; jacket={DescribeSelection(byId, normalizedProposal.JacketId)}; hat={DescribeSelection(byId, normalizedProposal.HatId)}";
 
         await context.AddEventAsync(new WorkflowDebugEvent(
             AgentLoopEventType.Validation,
@@ -856,8 +868,8 @@ internal sealed class ValidateOutfitExecutor(IClosetService closetService, IWeat
         }
 
         return byId.TryGetValue(id, out var item)
-            ? $"{item.Name} ({item.Id})"
-            : id;
+            ? $"`{item.Id}`: {item.Description}"
+            : $"`{id}`";
     }
 }
 
