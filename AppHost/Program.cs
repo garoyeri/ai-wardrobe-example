@@ -9,7 +9,7 @@ var ollama = builder.AddOllama("ollama")
     });
 
 var model = ollama.AddModel("model", "granite4:3b");
-var embeddings = ollama.AddModel("embeddings", "nomic-embed-text:v1.5");
+var embeddings = ollama.AddModel("embeddings", "mxbai-embed-large:335m");
 
 var vectorDb = builder.AddQdrant("vector-db")
     .WithImageTag("v1.17.1")

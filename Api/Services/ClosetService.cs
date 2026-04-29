@@ -22,10 +22,14 @@ public interface IClosetService
 public sealed class ClosetService : IClosetService
 {
     private const string CollectionName = "closet";
-    private const ulong EmbeddingDimensions = 768;
+    private const ulong EmbeddingDimensions = 512;
     private const int MaxPageSize = 50;
     private const int EmbeddingBatchSize = 32;
-    private const float SemanticScoreThreshold = 0.60f;
+    private const float SemanticScoreThreshold = 0.70f;
+    // mxbai-embed-large: documents are plain text, queries use this prefix
+    // nomic-embed-text: use "search_document: " and "search_query: " respectively
+    private const string EmbeddingDocumentPrefix = "";
+    private const string EmbeddingQueryPrefix = "Represent this sentence for searching relevant passages: ";
 
     private static readonly IReadOnlyDictionary<OutfitRole, string> RolePrefixes = new Dictionary<OutfitRole, string>
     {
@@ -206,7 +210,7 @@ public sealed class ClosetService : IClosetService
         for (var start = 0; start < items.Count; start += EmbeddingBatchSize)
         {
             var batch = items.Skip(start).Take(EmbeddingBatchSize).ToArray();
-            var descriptions = batch.Select(it => it.Description).ToArray();
+            var descriptions = batch.Select(it => $"{EmbeddingDocumentPrefix}{it.Description}").ToArray();
             var generated = await _embeddings.GenerateAsync(descriptions, cancellationToken: cancellationToken);
 
             var points = new List<PointStruct>(batch.Length);
@@ -226,7 +230,7 @@ public sealed class ClosetService : IClosetService
             return await ScrollAllAsync(filter, cancellationToken);
         }
 
-        var embedding = await _embeddings.GenerateAsync(description, cancellationToken: cancellationToken);
+        var embedding = await _embeddings.GenerateAsync($"{EmbeddingQueryPrefix}{description}", cancellationToken: cancellationToken);
         var allResults = await _qdrant.SearchAsync(
             CollectionName,
             embedding.Vector.ToArray(),
