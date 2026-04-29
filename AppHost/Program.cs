@@ -12,6 +12,7 @@ var model = ollama.AddModel("model", "granite4:3b");
 var embeddings = ollama.AddModel("embeddings", "nomic-embed-text:v1.5");
 
 var vectorDb = builder.AddQdrant("vector-db")
+    .WithImageTag("v1.17.1")
     .WithDataVolume("qdrant-data");
 
 var api = builder.AddProject<Projects.Api>("api")
