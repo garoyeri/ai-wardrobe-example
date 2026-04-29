@@ -28,8 +28,8 @@ builder.AddOllamaApiClient("model")
     .UseFunctionInvocation()
     .UseOpenTelemetry(sourceName: OllamaSource, configure: c => { c.EnableSensitiveData = true; });
 builder.AddOllamaApiClient("embeddings")
-    .AddKeyedEmbeddingGenerator("embeddings")
-    .UseOpenTelemetry(sourceName: OllamaSource, configure: c => { c.EnableSensitiveData = true; });
+    .AddKeyedEmbeddingGenerator("embeddings");
+    //.UseOpenTelemetry(sourceName: OllamaSource, configure: c => { c.EnableSensitiveData = true; });
 
 builder.Services.AddSingleton<IClosetService, ClosetService>();
 builder.Services.AddSingleton<IWeatherService, WeatherService>();

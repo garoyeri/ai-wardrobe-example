@@ -22,7 +22,7 @@ public interface IClosetService
 public sealed class ClosetService : IClosetService
 {
     private const string CollectionName = "closet";
-    private const ulong EmbeddingDimensions = 512;
+    private const ulong EmbeddingDimensions = 1024;
     private const int MaxPageSize = 50;
     private const int EmbeddingBatchSize = 32;
     private const float SemanticScoreThreshold = 0.70f;
