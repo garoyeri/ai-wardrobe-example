@@ -23,16 +23,11 @@ builder.Services.AddCors(options =>
 
 builder.AddQdrantClient("vector-db");
 
-var ollamaModel = builder.Configuration["Ollama:Model"]
-    ?? throw new InvalidOperationException("Missing Ollama model configuration 'Ollama:Model'.");
-var embeddingsModel = builder.Configuration["Ollama:Embeddings"]
-    ?? throw new InvalidOperationException("Missing Ollama embeddings model configuration 'Ollama:Embeddings'.");
-
-builder.AddOllamaApiClient("ollama", c => { c.SelectedModel = ollamaModel; })
+builder.AddOllamaApiClient("model")
     .AddKeyedChatClient("chat", c => { c.EnableSensitiveData = true; })
     .UseFunctionInvocation()
     .UseOpenTelemetry(sourceName: OllamaSource, configure: c => { c.EnableSensitiveData = true; });
-builder.AddOllamaApiClient("ollama", c => { c.SelectedModel = embeddingsModel; })
+builder.AddOllamaApiClient("embeddings")
     .AddKeyedEmbeddingGenerator("embeddings")
     .UseOpenTelemetry(sourceName: OllamaSource, configure: c => { c.EnableSensitiveData = true; });
 

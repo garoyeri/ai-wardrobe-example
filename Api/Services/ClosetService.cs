@@ -1,20 +1,31 @@
+using System.Drawing;
+using System.Security.Cryptography;
+using System.Text;
+using Microsoft.Extensions.AI;
+using Qdrant.Client;
+using Qdrant.Client.Grpc;
 using Shared.Contracts;
 
 namespace Api.Services;
 
 public interface IClosetService
 {
-    IReadOnlyList<ClosetItemDto> List();
-    ClosetSearchResultDto Search(ClosetSearchRequest request);
-    ClosetItemDto Add(UpsertClosetItemRequest request);
-    ClosetItemDto? Update(string id, UpsertClosetItemRequest request);
-    bool Delete(string id);
-    void Reset();
+    Task<IReadOnlyList<ClosetItemDto>> ListAsync(CancellationToken cancellationToken = default);
+    Task<ClosetSearchResultDto> SearchAsync(ClosetSearchRequest request, CancellationToken cancellationToken = default);
+    Task<ClosetItemDto?> GetAsync(string id, CancellationToken cancellationToken = default);
+    Task<ClosetItemDto> AddAsync(UpsertClosetItemRequest request, CancellationToken cancellationToken = default);
+    Task<ClosetItemDto?> UpdateAsync(string id, UpsertClosetItemRequest request, CancellationToken cancellationToken = default);
+    Task<bool> DeleteAsync(string id, CancellationToken cancellationToken = default);
+    Task ResetAsync(CancellationToken cancellationToken = default);
 }
 
 public sealed class ClosetService : IClosetService
 {
+    private const string CollectionName = "closet";
+    private const ulong EmbeddingDimensions = 768;
     private const int MaxPageSize = 50;
+    private const int EmbeddingBatchSize = 32;
+
     private static readonly IReadOnlyDictionary<OutfitRole, string> RolePrefixes = new Dictionary<OutfitRole, string>
     {
         [OutfitRole.Top] = "tops",
@@ -24,99 +35,349 @@ public sealed class ClosetService : IClosetService
         [OutfitRole.Jacket] = "jckt"
     };
 
-    private readonly List<ClosetItemDto> _items = Seed();
+    private readonly QdrantClient _qdrant;
+    private readonly IEmbeddingGenerator<string, Embedding<float>> _embeddings;
+    private readonly ILogger<ClosetService> _logger;
+    private readonly SemaphoreSlim _initLock = new(1, 1);
+    private bool _initialized;
 
-    public IReadOnlyList<ClosetItemDto> List() => _items.OrderBy(x => x.Name).ToArray();
-
-    public ClosetSearchResultDto Search(ClosetSearchRequest request)
+    public ClosetService(
+        QdrantClient qdrant,
+        [FromKeyedServices("embeddings")] IEmbeddingGenerator<string, Embedding<float>> embeddings,
+        ILogger<ClosetService> logger)
     {
+        _qdrant = qdrant;
+        _embeddings = embeddings;
+        _logger = logger;
+    }
+
+    public async Task<IReadOnlyList<ClosetItemDto>> ListAsync(CancellationToken cancellationToken = default)
+    {
+        await EnsureInitializedAsync(cancellationToken);
+        var items = await ScrollAllAsync(filter: null, cancellationToken);
+        return items.OrderBy(x => x.Name, StringComparer.OrdinalIgnoreCase).ToArray();
+    }
+
+    public async Task<ClosetSearchResultDto> SearchAsync(ClosetSearchRequest request, CancellationToken cancellationToken = default)
+    {
+        await EnsureInitializedAsync(cancellationToken);
+
         var pageNumber = Math.Max(1, request.PageNumber);
         var pageSize = Math.Clamp(request.PageSize, 1, MaxPageSize);
 
-        IEnumerable<ClosetItemDto> query = _items;
+        var filter = BuildFilter(request);
+        var matched = await SearchByDescriptionAsync(request.Description, filter, cancellationToken);
 
-        if (request.Role.HasValue)
-        {
-            query = query.Where(item => item.Role == request.Role.Value);
-        }
-
-        if (request.Colors is { Count: > 0 })
-        {
-            var colors = request.Colors.Select(NormalizeTag).Where(static x => x.Length > 0).ToArray();
-            query = query.Where(item => colors.Any(color => item.Colors.Select(NormalizeTag).Contains(color)));
-        }
-
-        if (!string.IsNullOrWhiteSpace(request.Pattern))
-        {
-            var pattern = NormalizeTag(request.Pattern);
-            query = query.Where(item => NormalizeTag(item.Pattern) == pattern);
-        }
-
-        if (request.Waterproof.HasValue)
-        {
-            query = query.Where(item => item.Waterproof == request.Waterproof.Value);
-        }
-
-        if (request.MinWarmth.HasValue)
-        {
-            query = query.Where(item => item.Warmth >= request.MinWarmth.Value);
-        }
-
-        if (request.MaxWarmth.HasValue)
-        {
-            query = query.Where(item => item.Warmth <= request.MaxWarmth.Value);
-        }
-
-        if (request.Formality.HasValue)
-        {
-            query = query.Where(item => item.Formality == request.Formality.Value);
-        }
-
-        var total = query.Count();
-        var items = query
-            .OrderBy(item => item.Name)
-            .Skip((pageNumber - 1) * pageSize)
-            .Take(pageSize)
-            .ToArray();
-
-        var hasMore = (pageNumber * pageSize) < total;
-        return new ClosetSearchResultDto(items, total, pageNumber, pageSize, hasMore);
+        var ordered = matched.OrderBy(x => x.Name, StringComparer.OrdinalIgnoreCase).ToArray();
+        var total = ordered.Length;
+        var page = ordered.Skip((pageNumber - 1) * pageSize).Take(pageSize).ToArray();
+        var hasMore = pageNumber * pageSize < total;
+        return new ClosetSearchResultDto(page, total, pageNumber, pageSize, hasMore);
     }
 
-    public ClosetItemDto Add(UpsertClosetItemRequest request)
+    public async Task<ClosetItemDto?> GetAsync(string id, CancellationToken cancellationToken = default)
     {
-        var item = ToItem(NextIdForRole(request.Role), request);
-        _items.Add(item);
+        await EnsureInitializedAsync(cancellationToken);
+        var normalized = NormalizeId(id);
+        var points = await _qdrant.RetrieveAsync(
+            CollectionName,
+            GuidFromId(normalized),
+            withPayload: true,
+            withVectors: false,
+            cancellationToken: cancellationToken);
+        return points.Count == 0 ? null : PayloadToItem(points[0].Payload);
+    }
+
+    public async Task<ClosetItemDto> AddAsync(UpsertClosetItemRequest request, CancellationToken cancellationToken = default)
+    {
+        await EnsureInitializedAsync(cancellationToken);
+
+        var prefix = RolePrefixes.TryGetValue(request.Role, out var p) ? p : "item";
+        var existing = await ScrollAllAsync(filter: null, cancellationToken);
+        var max = existing
+            .Select(x => TryExtractSequence(x.Id, prefix))
+            .Where(seq => seq.HasValue)
+            .Select(seq => seq!.Value)
+            .DefaultIfEmpty(0)
+            .Max();
+        if (max >= 9999)
+        {
+            throw new InvalidOperationException($"Cannot generate more IDs for prefix '{prefix}'.");
+        }
+
+        var item = ToItem($"{prefix}{max + 1:0000}", request);
+        await UpsertItemsAsync([item], cancellationToken);
         return item;
     }
 
-    public ClosetItemDto? Update(string id, UpsertClosetItemRequest request)
+    public async Task<ClosetItemDto?> UpdateAsync(string id, UpsertClosetItemRequest request, CancellationToken cancellationToken = default)
     {
-        var normalizedId = NormalizeId(id);
-        var index = _items.FindIndex(x => x.Id == normalizedId);
-        if (index < 0)
+        await EnsureInitializedAsync(cancellationToken);
+        var normalized = NormalizeId(id);
+        var existing = await GetAsync(normalized, cancellationToken);
+        if (existing is null)
         {
             return null;
         }
 
-        var updated = ToItem(normalizedId, request);
-        _items[index] = updated;
+        var updated = ToItem(normalized, request);
+        await UpsertItemsAsync([updated], cancellationToken);
         return updated;
     }
 
-    public bool Delete(string id)
+    public async Task<bool> DeleteAsync(string id, CancellationToken cancellationToken = default)
     {
-        var normalizedId = NormalizeId(id);
-        return _items.RemoveAll(x => x.Id == normalizedId) > 0;
+        await EnsureInitializedAsync(cancellationToken);
+        var normalized = NormalizeId(id);
+        var existing = await GetAsync(normalized, cancellationToken);
+        if (existing is null)
+        {
+            return false;
+        }
+
+        await _qdrant.DeleteAsync(CollectionName, GuidFromId(normalized), cancellationToken: cancellationToken);
+        return true;
     }
 
-    public void Reset()
+    public async Task ResetAsync(CancellationToken cancellationToken = default)
     {
-        _items.Clear();
-        _items.AddRange(Seed());
+        await _initLock.WaitAsync(cancellationToken);
+        try
+        {
+            if (await _qdrant.CollectionExistsAsync(CollectionName, cancellationToken))
+            {
+                _logger.LogInformation("Dropping Qdrant collection {Collection}", CollectionName);
+                await _qdrant.DeleteCollectionAsync(CollectionName, cancellationToken: cancellationToken);
+            }
+
+            await CreateCollectionAsync(cancellationToken);
+            await SeedAsync(cancellationToken);
+            _initialized = true;
+        }
+        finally
+        {
+            _initLock.Release();
+        }
     }
 
-    private ClosetItemDto ToItem(string id, UpsertClosetItemRequest request) =>
+    private async Task EnsureInitializedAsync(CancellationToken cancellationToken)
+    {
+        if (_initialized) return;
+
+        await _initLock.WaitAsync(cancellationToken);
+        try
+        {
+            if (_initialized) return;
+
+            var exists = await _qdrant.CollectionExistsAsync(CollectionName, cancellationToken);
+            if (!exists)
+            {
+                _logger.LogInformation("Closet collection not present; creating and seeding {Collection}", CollectionName);
+                await CreateCollectionAsync(cancellationToken);
+                await SeedAsync(cancellationToken);
+            }
+
+            _initialized = true;
+        }
+        finally
+        {
+            _initLock.Release();
+        }
+    }
+
+    private Task CreateCollectionAsync(CancellationToken cancellationToken) =>
+        _qdrant.CreateCollectionAsync(
+            CollectionName,
+            new VectorParams { Size = EmbeddingDimensions, Distance = Distance.Cosine },
+            cancellationToken: cancellationToken);
+
+    private async Task SeedAsync(CancellationToken cancellationToken)
+    {
+        var seedItems = BuildSeedItems();
+        _logger.LogInformation("Seeding closet with {Count} items and computing embeddings.", seedItems.Count);
+        await UpsertItemsAsync(seedItems, cancellationToken);
+    }
+
+    private async Task UpsertItemsAsync(IReadOnlyList<ClosetItemDto> items, CancellationToken cancellationToken)
+    {
+        if (items.Count == 0) return;
+
+        for (var start = 0; start < items.Count; start += EmbeddingBatchSize)
+        {
+            var batch = items.Skip(start).Take(EmbeddingBatchSize).ToArray();
+            var descriptions = batch.Select(it => it.Description).ToArray();
+            var generated = await _embeddings.GenerateAsync(descriptions, cancellationToken: cancellationToken);
+
+            var points = new List<PointStruct>(batch.Length);
+            for (var i = 0; i < batch.Length; i++)
+            {
+                points.Add(BuildPoint(batch[i], generated[i].Vector.ToArray()));
+            }
+
+            await _qdrant.UpsertAsync(CollectionName, points, cancellationToken: cancellationToken);
+        }
+    }
+
+    private async Task<ClosetItemDto[]> SearchByDescriptionAsync(string? description, Filter? filter, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(description))
+        {
+            return await ScrollAllAsync(filter, cancellationToken);
+        }
+
+        var embedding = await _embeddings.GenerateAsync(description, cancellationToken: cancellationToken);
+        var response = await _qdrant.SearchAsync(
+            CollectionName,
+            embedding.Vector.ToArray(),
+            filter: filter,
+            limit: MaxPageSize,
+            payloadSelector: true,
+            vectorsSelector: false,
+            cancellationToken: cancellationToken);
+
+        return response.Select(p => PayloadToItem(p.Payload)).ToArray();
+    }
+
+    private async Task<ClosetItemDto[]> ScrollAllAsync(Filter? filter, CancellationToken cancellationToken)
+    {
+        var items = new List<ClosetItemDto>();
+        PointId? offset = null;
+
+        while (true)
+        {
+            var response = await _qdrant.ScrollAsync(
+                CollectionName,
+                filter: filter,
+                limit: 256,
+                offset: offset,
+                payloadSelector: true,
+                vectorsSelector: false,
+                cancellationToken: cancellationToken);
+
+            foreach (var point in response.Result)
+            {
+                items.Add(PayloadToItem(point.Payload));
+            }
+
+            var next = response.NextPageOffset;
+            if (next is null || next.PointIdOptionsCase == PointId.PointIdOptionsOneofCase.None)
+            {
+                break;
+            }
+
+            offset = next;
+        }
+
+        return items.ToArray();
+    }
+
+    private static PointStruct BuildPoint(ClosetItemDto item, float[] vector)
+    {
+        var point = new PointStruct
+        {
+            Id = GuidFromId(item.Id),
+            Vectors = vector,
+        };
+
+        point.Payload["id"] = item.Id;
+        point.Payload["name"] = item.Name;
+        point.Payload["role"] = (int)item.Role;
+        point.Payload["colors"] = item.Colors.Select(NormalizeTag).Where(c => c.Length > 0).ToArray();
+        point.Payload["pattern"] = NormalizeTag(item.Pattern);
+        point.Payload["material"] = item.Material;
+        point.Payload["weight"] = (int)item.Weight;
+        point.Payload["waterproof"] = item.Waterproof;
+        point.Payload["warmth"] = item.Warmth;
+        point.Payload["formality"] = (int)item.Formality;
+        return point;
+    }
+
+    private static ClosetItemDto PayloadToItem(IReadOnlyDictionary<string, Value> payload)
+    {
+        var colors = payload.TryGetValue("colors", out var colorsValue) && colorsValue.KindCase == Value.KindOneofCase.ListValue
+            ? colorsValue.ListValue.Values.Select(v => v.StringValue).ToArray()
+            : Array.Empty<string>();
+
+        return new ClosetItemDto(
+            Id: GetString(payload, "id"),
+            Name: GetString(payload, "name"),
+            Role: (OutfitRole)(int)GetLong(payload, "role"),
+            Colors: colors,
+            Pattern: GetString(payload, "pattern"),
+            Material: GetString(payload, "material"),
+            Weight: (MaterialWeight)(int)GetLong(payload, "weight"),
+            Waterproof: GetBool(payload, "waterproof"),
+            Warmth: (int)GetLong(payload, "warmth"),
+            Formality: (FormalityLevel)(int)GetLong(payload, "formality"));
+    }
+
+    private static string GetString(IReadOnlyDictionary<string, Value> payload, string key) =>
+        payload.TryGetValue(key, out var value) && value.KindCase == Value.KindOneofCase.StringValue ? value.StringValue : string.Empty;
+
+    private static long GetLong(IReadOnlyDictionary<string, Value> payload, string key) =>
+        payload.TryGetValue(key, out var value) && value.KindCase == Value.KindOneofCase.IntegerValue ? value.IntegerValue : 0L;
+
+    private static bool GetBool(IReadOnlyDictionary<string, Value> payload, string key) =>
+        payload.TryGetValue(key, out var value) && value.KindCase == Value.KindOneofCase.BoolValue && value.BoolValue;
+
+    private static Filter? BuildFilter(ClosetSearchRequest request)
+    {
+        var conditions = new List<Condition>();
+
+        if (request.Role.HasValue)
+        {
+            conditions.Add(Conditions.Match("role", (int)request.Role.Value));
+        }
+
+        if (request.Colors is { Count: > 0 })
+        {
+            var colors = request.Colors.Select(NormalizeTag).Where(c => c.Length > 0).ToArray();
+            if (colors.Length > 0)
+            {
+                conditions.Add(Conditions.Match("colors", colors));
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(request.Pattern))
+        {
+            conditions.Add(Conditions.MatchKeyword("pattern", NormalizeTag(request.Pattern)));
+        }
+
+        if (request.Waterproof.HasValue)
+        {
+            conditions.Add(Conditions.Match("waterproof", request.Waterproof.Value));
+        }
+
+        if (request.MinWarmth.HasValue || request.MaxWarmth.HasValue)
+        {
+            var range = new Qdrant.Client.Grpc.Range();
+            if (request.MinWarmth.HasValue)
+            {
+                range.Gte = request.MinWarmth.Value;
+            }
+            if (request.MaxWarmth.HasValue)
+            {
+                range.Lte = request.MaxWarmth.Value;
+            }
+            conditions.Add(Conditions.Range("warmth", range));
+        }
+
+        if (request.Formality.HasValue)
+        {
+            conditions.Add(Conditions.Match("formality", (int)request.Formality.Value));
+        }
+
+        if (conditions.Count == 0)
+        {
+            return null;
+        }
+
+        var filter = new Filter();
+        filter.Must.AddRange(conditions);
+        return filter;
+    }
+
+    private static ClosetItemDto ToItem(string id, UpsertClosetItemRequest request) =>
         new(
             NormalizeId(id),
             request.Name.Trim(),
@@ -133,52 +394,32 @@ public sealed class ClosetService : IClosetService
 
     private static string NormalizeId(string value) => value.Trim().ToLowerInvariant();
 
-    private string NextIdForRole(OutfitRole role)
-    {
-        var prefix = GetPrefix(role);
-        var max = _items
-            .Select(item => TryExtractSequence(item.Id, prefix))
-            .Where(sequence => sequence.HasValue)
-            .Select(sequence => sequence!.Value)
-            .DefaultIfEmpty(0)
-            .Max();
-
-        if (max >= 9999)
-            throw new InvalidOperationException($"Cannot generate more IDs for prefix '{prefix}'.");
-
-        return $"{prefix}{max + 1:0000}";
-    }
-
-    private static string GetPrefix(OutfitRole role)
-    {
-        return RolePrefixes.TryGetValue(role, out var prefix) ? prefix : "item";
-    }
-
     private static int? TryExtractSequence(string id, string prefix)
     {
         if (!id.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) || id.Length != 8)
             return null;
 
-        if (int.TryParse(id[4..], out var sequence))
-            return sequence;
+        return int.TryParse(id[4..], out var sequence) ? sequence : null;
+    }
 
-        return null;
+    private static Guid GuidFromId(string id)
+    {
+        var bytes = MD5.HashData(Encoding.UTF8.GetBytes(id));
+        return new Guid(bytes);
     }
 
     private static string CreateSeedId(string prefix, int number) => $"{prefix}{number:0000}";
 
-    private static List<ClosetItemDto> Seed()
+    private static List<ClosetItemDto> BuildSeedItems()
     {
         var items = new List<ClosetItemDto>();
-        var rand = new Random(42); // Fixed seed for reproducibility
+        var rand = new Random(42);
 
-        // Helper method to get random colors and patterns
         string[] patterns = ["solid", "striped", "plaid", "floral", "solid"];
         string[] materials = ["cotton", "wool", "polyester", "linen", "denim", "leather"];
         MaterialWeight[] weights = [MaterialWeight.Light, MaterialWeight.Light, MaterialWeight.Medium, MaterialWeight.Medium, MaterialWeight.Heavy];
         FormalityLevel[] formalities = [FormalityLevel.Casual, FormalityLevel.SmartCasual, FormalityLevel.Formal];
 
-        // 50 Tops (50%)
         string[] topNames = [
             "White T-Shirt", "Navy Polo", "Charcoal Henley", "Cream Button-Up", "Blue Chambray",
             "Gray Sweater", "Black Turtleneck", "Olive Crew Neck", "Burgundy Cardigan", "White Linen Shirt",
@@ -192,56 +433,16 @@ public sealed class ClosetService : IClosetService
             "Burgundy Tank", "Olive Sweater", "Cream Cardigan", "Navy Henley", "Gray Sweater Vest"
         ];
         string[] topColors = [
-            "white",     // White T-Shirt
-            "navy",      // Navy Polo
-            "charcoal",  // Charcoal Henley
-            "cream",     // Cream Button-Up
-            "blue",      // Blue Chambray
-            "gray",      // Gray Sweater
-            "black",     // Black Turtleneck
-            "olive",     // Olive Crew Neck
-            "burgundy",  // Burgundy Cardigan
-            "white",     // White Linen Shirt
-            "navy",      // Striped Breton (navy/white breton stripes)
-            "red",       // Red Sweater
-            "tan",       // Tan Cable Knit
-            "navy",      // Navy Peacoat Top
-            "green",     // Green Hoodie
-            "pink",      // Floral Blouse
-            "white",     // White Oxford
-            "charcoal",  // Charcoal Thermal
-            "navy",      // Navy Cashmere
-            "blue",      // Blue Denim Shirt
-            "gray",      // Gray Hoodie
-            "cream",     // Cream Sweater
-            "black",     // Black Leather Jacket Liner
-            "red",       // Plaid Flannel (classic red plaid)
-            "white",     // Solid Tee
-            "navy",      // Navy Sweater
-            "white",     // White Tank
-            "charcoal",  // Charcoal V-Neck
-            "burgundy",  // Burgundy Pullover
-            "beige",     // Beige Blazer
-            "blue",      // Blue Striped Shirt
-            "gray",      // Gray Cardigan
-            "olive",     // Olive Shirt
-            "cream",     // Cream Cable Sweater
-            "white",     // White Crop Top
-            "navy",      // Navy Vest
-            "charcoal",  // Charcoal Hoodie
-            "red",       // Red Polo
-            "tan",       // Tan Shirt
-            "black",     // Black Sweater
-            "gray",      // Gray Turtleneck
-            "blue",      // Blue Flannel
-            "navy",      // Navy Thermal
-            "charcoal",  // Charcoal Crew
-            "white",     // White Camisole
-            "burgundy",  // Burgundy Tank
-            "olive",     // Olive Sweater
-            "cream",     // Cream Cardigan
-            "navy",      // Navy Henley
-            "gray",      // Gray Sweater Vest
+            "white", "navy", "charcoal", "cream", "blue",
+            "gray", "black", "olive", "burgundy", "white",
+            "navy", "red", "tan", "navy", "green",
+            "pink", "white", "charcoal", "navy", "blue",
+            "gray", "cream", "black", "red", "white",
+            "navy", "white", "charcoal", "burgundy", "beige",
+            "blue", "gray", "olive", "cream", "white",
+            "navy", "charcoal", "red", "tan", "black",
+            "gray", "blue", "navy", "charcoal", "white",
+            "burgundy", "olive", "cream", "navy", "gray"
         ];
         for (int i = 0; i < 50; i++)
         {
@@ -259,7 +460,6 @@ public sealed class ClosetService : IClosetService
             ));
         }
 
-        // 25 Bottoms (25%)
         string[] bottomNames = [
             "Navy Chinos", "Black Jeans", "Gray Trousers", "Tan Shorts", "Charcoal Slacks",
             "Blue Jeans", "Black Leggings", "Cargo Pants", "White Linen Pants", "Navy Shorts",
@@ -268,31 +468,11 @@ public sealed class ClosetService : IClosetService
             "Black Trousers", "Blue Shorts", "Gray Jeans", "Tan Pants", "Charcoal Shorts"
         ];
         string[] bottomColors = [
-            "navy",      // Navy Chinos
-            "black",     // Black Jeans
-            "gray",      // Gray Trousers
-            "tan",       // Tan Shorts
-            "charcoal",  // Charcoal Slacks
-            "blue",      // Blue Jeans
-            "black",     // Black Leggings
-            "olive",     // Cargo Pants (classic olive/military color)
-            "white",     // White Linen Pants
-            "navy",      // Navy Shorts
-            "beige",     // Khaki Chinos (khaki = beige)
-            "navy",      // Dark Jeans (dark wash = navy)
-            "gray",      // Gray Joggers
-            "olive",     // Olive Pants
-            "black",     // Black Shorts
-            "blue",      // Denim Shorts (denim = blue)
-            "charcoal",  // Wool Trousers (classic charcoal wool)
-            "beige",     // Cotton Pants (neutral beige)
-            "navy",      // Navy Cargo
-            "beige",     // Beige Chinos
-            "black",     // Black Trousers
-            "blue",      // Blue Shorts
-            "gray",      // Gray Jeans
-            "tan",       // Tan Pants
-            "charcoal",  // Charcoal Shorts
+            "navy", "black", "gray", "tan", "charcoal",
+            "blue", "black", "olive", "white", "navy",
+            "beige", "navy", "gray", "olive", "black",
+            "blue", "charcoal", "beige", "navy", "beige",
+            "black", "blue", "gray", "tan", "charcoal"
         ];
         for (int i = 0; i < 25; i++)
         {
@@ -310,28 +490,15 @@ public sealed class ClosetService : IClosetService
             ));
         }
 
-        // 15 Jackets (15%)
         string[] jacketNames = [
             "Tan Trench Coat", "Blue Denim Jacket", "Black Leather Jacket", "Navy Blazer", "Gray Wool Coat",
             "Olive Bomber", "Charcoal Cardigan Jacket", "Beige Cardigan", "Blue Windbreaker", "Black Puffer",
             "Navy Wool Coat", "Tan Cardigan", "Gray Blazer", "Blue Denim Overshirt", "Burgundy Sweater Jacket"
         ];
         string[] jacketColors = [
-            "tan",       // Tan Trench Coat
-            "blue",      // Blue Denim Jacket
-            "black",     // Black Leather Jacket
-            "navy",      // Navy Blazer
-            "gray",      // Gray Wool Coat
-            "olive",     // Olive Bomber
-            "charcoal",  // Charcoal Cardigan Jacket
-            "beige",     // Beige Cardigan
-            "blue",      // Blue Windbreaker
-            "black",     // Black Puffer
-            "navy",      // Navy Wool Coat
-            "tan",       // Tan Cardigan
-            "gray",      // Gray Blazer
-            "blue",      // Blue Denim Overshirt
-            "burgundy",  // Burgundy Sweater Jacket
+            "tan", "blue", "black", "navy", "gray",
+            "olive", "charcoal", "beige", "blue", "black",
+            "navy", "tan", "gray", "blue", "burgundy"
         ];
         for (int i = 0; i < 15; i++)
         {
@@ -343,23 +510,16 @@ public sealed class ClosetService : IClosetService
                 patterns[rand.Next(patterns.Length)],
                 materials[rand.Next(materials.Length)],
                 weights[rand.Next(weights.Length)],
-                rand.Next(2) == 0, // 50% waterproof
+                rand.Next(2) == 0,
                 rand.Next(2, 6),
                 formalities[rand.Next(formalities.Length)]
             ));
         }
 
-        // 5 Hats (5%)
         string[] hatNames = [
             "Cream Sun Hat", "Black Baseball Cap", "Navy Beanie", "Tan Fedora", "Gray Wool Hat"
         ];
-        string[] hatColors = [
-            "cream",  // Cream Sun Hat
-            "black",  // Black Baseball Cap
-            "navy",   // Navy Beanie
-            "tan",    // Tan Fedora
-            "gray",   // Gray Wool Hat
-        ];
+        string[] hatColors = ["cream", "black", "navy", "tan", "gray"];
         for (int i = 0; i < 5; i++)
         {
             items.Add(new ClosetItemDto(
@@ -376,17 +536,10 @@ public sealed class ClosetService : IClosetService
             ));
         }
 
-        // 5 Shoes (5%)
         string[] shoeNames = [
             "Black Chelsea Boots", "White Sneakers", "Brown Loafers", "Navy Trainers", "Tan Desert Boots"
         ];
-        string[] shoeColors = [
-            "black",  // Black Chelsea Boots
-            "white",  // White Sneakers
-            "brown",  // Brown Loafers
-            "navy",   // Navy Trainers
-            "tan",    // Tan Desert Boots
-        ];
+        string[] shoeColors = ["black", "white", "brown", "navy", "tan"];
         for (int i = 0; i < 5; i++)
         {
             items.Add(new ClosetItemDto(
@@ -397,7 +550,7 @@ public sealed class ClosetService : IClosetService
                 patterns[rand.Next(patterns.Length)],
                 materials[rand.Next(materials.Length)],
                 weights[rand.Next(weights.Length)],
-                rand.Next(3) == 0, // ~33% waterproof shoes
+                rand.Next(3) == 0,
                 rand.Next(1, 5),
                 formalities[rand.Next(formalities.Length)]
             ));

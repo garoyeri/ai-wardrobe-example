@@ -61,6 +61,7 @@ public sealed record ClosetSearchRequest(
     int? MinWarmth = null,
     int? MaxWarmth = null,
     FormalityLevel? Formality = null,
+    string? Description = null,
     int PageNumber = 1,
     int PageSize = 20);
 

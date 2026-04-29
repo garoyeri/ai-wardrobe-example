@@ -303,16 +303,15 @@ public sealed class AgentLoopService : IAgentLoopService
     }
 
     [Description("Search closet inventory with bounded paging and filters for role, color, pattern, warmth, and weather safety. Accepts plain scalar values or single-value arrays.")]
-    public string SearchClosetTool(
+    public async Task<string> SearchClosetTool(
+        [Description("Optional description of the item you're looking for, for example 'a navy blue waterproof jacket suitable for rainy weather.')]")] string? description = null,
         [Description("Optional role filter, valid values are Top, Bottom, Shoes, Hat, Jacket. Scalar or single-value array accepted.")] JsonElement? role = null,
         [Description("Optional color filter, for example navy or white. Scalar or single-value array accepted.")] JsonElement? color = null,
         [Description("Optional pattern filter, for example solid or floral. Scalar or single-value array accepted.")] JsonElement? pattern = null,
         [Description("Optional minimum warmth value from 1 to 5. Scalar or single-value array accepted.")] JsonElement? minWarmth = null,
         [Description("Optional maximum warmth value from 1 to 5. Scalar or single-value array accepted.")] JsonElement? maxWarmth = null,
         [Description("Optional waterproof requirement. Scalar or single-value array accepted.")] JsonElement? waterproof = null,
-        [Description("Optional formality filter, valid values are Casual, SmartCasual, Formal. Scalar or single-value array accepted.")] JsonElement? formality = null,
-        [Description("1-based page number. Scalar or single-value array accepted.")] JsonElement? pageNumber = null,
-        [Description("Page size between 1 and 50. Scalar or single-value array accepted.")] JsonElement? pageSize = null)
+        [Description("Optional formality filter, valid values are Casual, SmartCasual, Formal. Scalar or single-value array accepted.")] JsonElement? formality = null)
     {
         var parsedRole = ParseOptionalEnum<OutfitRole>(role);
         var parsedColor = ParseOptionalString(color);
@@ -321,8 +320,6 @@ public sealed class AgentLoopService : IAgentLoopService
         var parsedMaxWarmth = ParseOptionalInt(maxWarmth);
         var parsedWaterproof = ParseOptionalBool(waterproof);
         var parsedFormality = ParseOptionalEnum<FormalityLevel>(formality);
-        var parsedPageNumber = ParseOptionalInt(pageNumber) ?? 1;
-        var parsedPageSize = ParseOptionalInt(pageSize) ?? 12;
 
         var request = new ClosetSearchRequest(
             parsedRole,
@@ -332,17 +329,21 @@ public sealed class AgentLoopService : IAgentLoopService
             parsedMinWarmth,
             parsedMaxWarmth,
             parsedFormality,
-            parsedPageNumber,
-            parsedPageSize);
+            description);
 
-        var result = _closetService.Search(request);
+        var result = await _closetService.SearchAsync(request);
         return JsonSerializer.Serialize(result);
     }
 
     [Description("Get a single closet item by ID.")]
-    public string GetClosetItemByIdTool([Description("Closet item ID")] string itemId)
+    public async Task<string> GetClosetItemByIdTool([Description("Closet item ID")] string itemId)
     {
-        var item = _closetService.List().FirstOrDefault(x => x.Id == itemId || string.Equals(x.Name, itemId, StringComparison.OrdinalIgnoreCase));
+        var item = await _closetService.GetAsync(itemId);
+        if (item is null)
+        {
+            var all = await _closetService.ListAsync();
+            item = all.FirstOrDefault(x => string.Equals(x.Name, itemId, StringComparison.OrdinalIgnoreCase));
+        }
         return item is null ? "null" : JsonSerializer.Serialize(item);
     }
 
@@ -767,7 +768,7 @@ internal sealed class ValidateOutfitExecutor(IClosetService closetService, IWeat
         IWorkflowContext context,
         CancellationToken cancellationToken = default)
     {
-        var items = closetService.List();
+        var items = await closetService.ListAsync(cancellationToken);
         var byId = items.ToDictionary(item => item.Id, StringComparer.OrdinalIgnoreCase);
 
         var forecast = weatherService.Get();
@@ -868,7 +869,7 @@ internal sealed class OutputExecutor(IClosetService closetService) : Executor<Va
         CancellationToken cancellationToken = default)
     {
         var finalMessage = result.IsValid
-            ? BuildSuccessMessage(result)
+            ? await BuildSuccessMessageAsync(result, cancellationToken)
             : BuildFailureMessage(result);
 
         var output = new OutfitWorkflowOutput(
@@ -888,10 +889,11 @@ internal sealed class OutputExecutor(IClosetService closetService) : Executor<Va
         return output;
     }
 
-    private string BuildSuccessMessage(ValidationResult result)
+    private async Task<string> BuildSuccessMessageAsync(ValidationResult result, CancellationToken cancellationToken)
     {
         var proposal = result.Proposal;
-        var byId = closetService.List().ToDictionary(item => item.Id, StringComparer.OrdinalIgnoreCase);
+        var items = await closetService.ListAsync(cancellationToken);
+        var byId = items.ToDictionary(item => item.Id, StringComparer.OrdinalIgnoreCase);
 
         return $"""
             Final recommendation: outfit selected.

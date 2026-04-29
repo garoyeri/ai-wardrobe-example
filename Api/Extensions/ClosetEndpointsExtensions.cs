@@ -9,13 +9,22 @@ public static class ClosetEndpointsExtensions
     {
         var closet = app.MapGroup("/api/closet");
 
-        closet.MapGet("/items", (IClosetService service) => Results.Ok(service.List()));
-        closet.MapPost("/items/search", (IClosetService service, ClosetSearchRequest request) =>
+        closet.MapGet("/items", async (IClosetService service, CancellationToken cancellationToken) =>
+            Results.Ok(await service.ListAsync(cancellationToken)));
+
+        closet.MapGet("/items/{id}", async (IClosetService service, string id, CancellationToken cancellationToken) =>
         {
-            var result = service.Search(request);
+            var item = await service.GetAsync(id, cancellationToken);
+            return item is null ? Results.NotFound() : Results.Ok(item);
+        });
+
+        closet.MapPost("/items/search", async (IClosetService service, ClosetSearchRequest request, CancellationToken cancellationToken) =>
+        {
+            var result = await service.SearchAsync(request, cancellationToken);
             return Results.Ok(result);
         });
-        closet.MapPost("/items", (IClosetService service, UpsertClosetItemRequest request) =>
+
+        closet.MapPost("/items", async (IClosetService service, UpsertClosetItemRequest request, CancellationToken cancellationToken) =>
         {
             if (!Enum.IsDefined(request.Role))
             {
@@ -27,18 +36,21 @@ public static class ClosetEndpointsExtensions
                 return Results.BadRequest("A pattern is required.");
             }
 
-            return Results.Ok(service.Add(request));
+            return Results.Ok(await service.AddAsync(request, cancellationToken));
         });
-        closet.MapPut("/items/{id}", (IClosetService service, string id, UpsertClosetItemRequest request) =>
+
+        closet.MapPut("/items/{id}", async (IClosetService service, string id, UpsertClosetItemRequest request, CancellationToken cancellationToken) =>
         {
-            var updated = service.Update(id, request);
+            var updated = await service.UpdateAsync(id, request, cancellationToken);
             return updated is null ? Results.NotFound() : Results.Ok(updated);
         });
-        closet.MapDelete("/items/{id}", (IClosetService service, string id) =>
-            service.Delete(id) ? Results.NoContent() : Results.NotFound());
-        closet.MapPost("/reset", (IClosetService service) =>
+
+        closet.MapDelete("/items/{id}", async (IClosetService service, string id, CancellationToken cancellationToken) =>
+            await service.DeleteAsync(id, cancellationToken) ? Results.NoContent() : Results.NotFound());
+
+        closet.MapPost("/reset", async (IClosetService service, CancellationToken cancellationToken) =>
         {
-            service.Reset();
+            await service.ResetAsync(cancellationToken);
             return Results.NoContent();
         });
 
