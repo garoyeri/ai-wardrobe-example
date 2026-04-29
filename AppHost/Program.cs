@@ -9,11 +9,18 @@ var ollama = builder.AddOllama("ollama")
     });
 
 var model = ollama.AddModel("model", "granite4:3b");
+var embeddings = ollama.AddModel("embeddings", "nomic-embed-text:v1.5");
+
+var vectorDb = builder.AddQdrant("vector-db")
+    .WithDataVolume("qdrant-data");
 
 var api = builder.AddProject<Projects.Api>("api")
     .WithReference(ollama)
     .WithReference(model)
-    .WithEnvironment("Ollama__Model", model.Resource.ModelName);
+    .WithReference(embeddings)
+    .WithReference(vectorDb)
+    .WithEnvironment("Ollama__Model", model.Resource.ModelName)
+    .WithEnvironment("Ollama__Embeddings", embeddings.Resource.ModelName);
 
 builder.AddProject<Projects.Web>("web")
     .WithReference(api)

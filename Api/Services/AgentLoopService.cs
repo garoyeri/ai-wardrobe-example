@@ -32,7 +32,7 @@ public sealed class AgentLoopService : IAgentLoopService
     private readonly ChatClientAgent _summaryAgent;
 
     public AgentLoopService(
-        IChatClient chatClient,
+        [FromKeyedServices("chat")] IChatClient chatClient,
         IClosetService closetService,
         IWeatherService weatherService,
         IConversationCancellationManager cancellationManager,

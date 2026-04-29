@@ -2,7 +2,6 @@ using Api.Services;
 using Api.Extensions;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
-using OllamaSharp;
 using System.Text.Json;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -22,21 +21,21 @@ builder.Services.AddCors(options =>
     options.AddDefaultPolicy(policy =>
         policy.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader()));
 
-var ollamaConnectionString = builder.Configuration.GetConnectionString("ollama")
-    ?? throw new InvalidOperationException("Missing Aspire-provided connection string 'ConnectionStrings:ollama'.");
-var ollamaEndpoint = TryGetEndpointFromConnectionString(ollamaConnectionString)
-    ?? throw new InvalidOperationException("Invalid Aspire Ollama connection string. Expected format includes 'Endpoint=...'.");
-var ollamaModel = builder.Configuration["Ollama:Model"] ?? "llama3.2:1b";
+builder.AddQdrantClient("vector-db");
 
-var ollamaHttpClient = new HttpClient(new RetryHttpMessageHandler(maxRetries: 3, initialDelay: TimeSpan.FromMilliseconds(500)))
-{
-    BaseAddress = new Uri(ollamaEndpoint),
-    Timeout = TimeSpan.FromSeconds(200)
-};
+var ollamaModel = builder.Configuration["Ollama:Model"]
+    ?? throw new InvalidOperationException("Missing Ollama model configuration 'Ollama:Model'.");
+var embeddingsModel = builder.Configuration["Ollama:Embeddings"]
+    ?? throw new InvalidOperationException("Missing Ollama embeddings model configuration 'Ollama:Embeddings'.");
 
-builder.Services.AddChatClient(new OllamaApiClient(ollamaHttpClient, ollamaModel, jsonSerializerContext: null))
+builder.AddOllamaApiClient("ollama", c => { c.SelectedModel = ollamaModel; })
+    .AddKeyedChatClient("chat", c => { c.EnableSensitiveData = true; })
     .UseFunctionInvocation()
     .UseOpenTelemetry(sourceName: OllamaSource, configure: c => { c.EnableSensitiveData = true; });
+builder.AddOllamaApiClient("ollama", c => { c.SelectedModel = embeddingsModel; })
+    .AddKeyedEmbeddingGenerator("embeddings")
+    .UseOpenTelemetry(sourceName: OllamaSource, configure: c => { c.EnableSensitiveData = true; });
+
 builder.Services.AddSingleton<IClosetService, ClosetService>();
 builder.Services.AddSingleton<IWeatherService, WeatherService>();
 builder.Services.AddSingleton<IConversationCancellationManager, ConversationCancellationManager>();
@@ -64,17 +63,3 @@ app.MapChatEndpoints(streamJsonOptions);
 app.MapDefaultEndpoints();
 
 app.Run();
-
-static string? TryGetEndpointFromConnectionString(string connectionString)
-{
-    const string key = "Endpoint=";
-    var start = connectionString.IndexOf(key, StringComparison.OrdinalIgnoreCase);
-    if (start < 0)
-    {
-        return null;
-    }
-
-    start += key.Length;
-    var end = connectionString.IndexOf(';', start);
-    return (end >= start ? connectionString[start..end] : connectionString[start..]).Trim();
-}
